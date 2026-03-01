@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "memcore": {
+      "command": "E:/workspace/MemCore/.venv/Scripts/python.exe",
+      "args": ["-m", "src.memcore.main"],
+      "env": {
+        "PYTHONPATH": "E:/workspace/MemCore"
+      }
+    }
+  }
+}

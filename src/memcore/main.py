@@ -5,8 +5,14 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
 
-from strands_sdk.client import StrandsClient
-from strands_sdk.types import AgentConfig
+try:
+    from strands_sdk.client import StrandsClient
+    from strands_sdk.types import AgentConfig
+    STRANDS_AVAILABLE = True
+except ImportError:
+    STRANDS_AVAILABLE = False
+    StrandsClient = None
+    AgentConfig = None
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
@@ -33,11 +39,14 @@ class MemCoreAgent:
         
         # Strand SDK setup (Optional platform connection)
         strands_key = os.getenv("STRANDS_API_KEY")
-        if strands_key:
+        if strands_key and STRANDS_AVAILABLE:
             self.strand_client = StrandsClient(api_key=strands_key)
         else:
             self.strand_client = None
-            print("Notice: STRANDS_API_KEY not found. Running in local-only mode.")
+            if not STRANDS_AVAILABLE:
+                print("Notice: strands_sdk not available. Running in local-only mode.")
+            else:
+                print("Notice: STRANDS_API_KEY not found. Running in local-only mode.")
         
         # Scheduler for consolidation
         self.scheduler = AsyncIOScheduler()
