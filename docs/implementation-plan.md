@@ -20,11 +20,11 @@ This document outlines the technical roadmap for building the MemCore standalone
 
 ## 3. Phase 2: Memory Intelligence
 - [ ] **Advanced Tiered Retrieval:** Refine the L0 -> L1 -> L2 loop to be more token-efficient.
-- [ ] **Dynamic Relevancy:** Implement the graph-based update logic where successful retrievals strengthen edges.
+- [x] **Dynamic Relevancy:** Graph edge weights boost memory scores; feedback strengthens/weakens retrieval.
 - [ ] **Instruction Extraction:** Build the specific pipeline for `ai_instructions` quadrant.
 
 ## 4. Phase 3: Autonomous Consolidation (Sleep Phase)
-- [ ] **Stateful Queue:** Ensure the consolidation queue survives restarts (SQLite backed).
+- [x] **Stateful Queue:** SQLite-backed job queue survives restarts with retry logic.
 - [ ] **Fact Synthesis:** Implement LLM-driven deduplication and "Reflection" generation.
 - [ ] **Conflict Resolution:** Build the hierarchy-based resolution logic for contradictory memories.
 

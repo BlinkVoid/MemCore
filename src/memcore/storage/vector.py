@@ -50,9 +50,9 @@ class VectorStore:
                 ]
             )
         
-        return self.client.search(
+        return self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=vector,
+            query=vector,
             limit=limit,
             query_filter=search_filter,
             with_payload=True
@@ -99,3 +99,44 @@ class VectorStore:
             payload={"last_accessed": datetime.now().isoformat()},
             points=[memory_id]
         )
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Returns statistics about the vector store."""
+        collection_info = self.client.get_collection(self.collection_name)
+        total_count = collection_info.points_count
+        
+        # Get counts by type
+        types_count = {}
+        quadrants_count = {}
+        
+        # Scroll through all points to get stats
+        offset = None
+        while True:
+            results, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=1000,
+                offset=offset,
+                with_payload=True
+            )
+            
+            for point in results:
+                payload = point.payload
+                # Count by type
+                mem_type = payload.get("type", "unknown")
+                types_count[mem_type] = types_count.get(mem_type, 0) + 1
+                
+                # Count by quadrant
+                quads = payload.get("quadrants", [])
+                for q in quads:
+                    quadrants_count[q] = quadrants_count.get(q, 0) + 1
+            
+            if offset is None:
+                break
+        
+        return {
+            "total_memories": total_count,
+            "by_type": types_count,
+            "by_quadrant": quadrants_count,
+            "dimension": self.dimension,
+            "collection_name": self.collection_name
+        }

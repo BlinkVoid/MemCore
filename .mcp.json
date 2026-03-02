@@ -1,11 +1,7 @@
 {
   "mcpServers": {
     "memcore": {
-      "command": "E:/workspace/MemCore/.venv/Scripts/python.exe",
-      "args": ["-m", "src.memcore.main"],
-      "env": {
-        "PYTHONPATH": "E:/workspace/MemCore"
-      }
+      "url": "http://127.0.0.1:8081/sse"
     }
   }
 }

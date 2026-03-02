@@ -57,13 +57,18 @@ def check_env_variables():
     required_keys = PROVIDER_API_KEYS.get(provider, [])
     print(f"\n🔑 API Key Status:")
     all_present = True
-    for key in required_keys:
-        value = os.getenv(key)
-        if value and value != f"your_{key.lower()}_key" and not value.startswith("your_"):
-            print(f"  ✓ {key}: Set")
-        else:
-            print(f"  ✗ {key}: NOT SET")
-            all_present = False
+    
+    if provider == "ollama":
+        print(f"  ✓ OLLAMA: No API key needed (local LLM)")
+        print(f"    Make sure Ollama is running: http://localhost:11434")
+    else:
+        for key in required_keys:
+            value = os.getenv(key)
+            if value and value != f"your_{key.lower()}_key" and not value.startswith("your_"):
+                print(f"  ✓ {key}: Set")
+            else:
+                print(f"  ✗ {key}: NOT SET")
+                all_present = False
     
     # Check optional keys
     print(f"\n📁 Optional Configuration:")
@@ -167,6 +172,8 @@ async def main():
         print(f"\n⚠️  Missing required API keys for provider: {provider}")
         if provider == "kimi":
             show_kimi_quickstart()
+        elif provider == "ollama":
+            show_ollama_quickstart()
         sys.exit(1)
     
     # Test connection

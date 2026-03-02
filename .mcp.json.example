@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "_comment": "Choose ONE of the configurations below:",
+    
+    "memcore-sse": {
+      "_comment": "Connect to standalone SSE server (run: uv run scripts/run_server.py)",
+      "url": "http://127.0.0.1:8080/sse"
+    },
+    
+    "memcore-stdio": {
+      "_comment": "Spawn process via stdio (legacy mode)",
+      "command": "E:/workspace/MemCore/.venv/Scripts/python.exe",
+      "args": ["-m", "src.memcore.main", "--mode", "stdio"],
+      "env": {
+        "PYTHONPATH": "E:/workspace/MemCore"
+      }
+    }
+  }
+}

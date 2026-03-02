@@ -9,6 +9,7 @@ PROVIDER_API_KEYS = {
     "gemini": ["GEMINI_API_KEY"],
     "kimi": ["MOONSHOT_API_KEY"],
     "deepseek": ["DEEPSEEK_API_KEY"],
+    "ollama": [],  # No API key needed for local LLM
 }
 
 # Default embedding model for all providers
@@ -40,6 +41,11 @@ MODEL_CATALOGUE = {
     },
     "local": {
         "embedding": DEFAULT_EMBEDDING_MODEL
+    },
+    "ollama": {
+        "fast": "ollama/qwen2.5:7b",  # Fast, good for routing
+        "strong": "ollama/qwen2.5:14b",  # Better for consolidation
+        "embedding": f"local/{DEFAULT_EMBEDDING_MODEL}"  # Still use local embeddings
     }
 }
 

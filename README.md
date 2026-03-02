@@ -2,6 +2,8 @@
 
 **MemCore** is a standalone, agentic memory management system designed to serve as a centralized "brain" for AI agents across multiple systems and tools.
 
+> 🚀 **Quick Start:** See [`START-HERE.md`](START-HERE.md) to get running in 3 steps!
+
 ## Core Features
 - **Tiered Context Disclosure:** Optimized L0 (Index), L1 (Snippet), and L2 (Full Detail) retrieval to minimize noise and token costs.
 - **Agentic Gatekeeping:** A watched process (Strand SDK) that manages memory lifecycle, consolidation, and conflict resolution.
@@ -65,8 +67,62 @@ uv run scripts/verify_config.py
 ```
 
 ### Running the Gatekeeper
+
+MemCore supports two transport modes:
+
+#### 1. Standalone SSE Server (Recommended)
+Run MemCore as a standalone service that multiple MCP clients can connect to:
+
 ```bash
-uv run src/memcore/main.py
+# Install with SSE support
+uv sync --extra sse
+
+# Run the server (default: http://127.0.0.1:8080)
+uv run src/memcore/main.py --mode sse
+
+# Or use the helper script
+uv run scripts/run_server.py
+
+# Custom host/port
+uv run scripts/run_server.py --host 0.0.0.0 --port 9000
+```
+
+**Endpoints:**
+- `GET /sse` - SSE connection endpoint for MCP clients
+- `POST /messages` - Message endpoint for MCP clients
+- `GET /health` - Health check
+
+#### 2. Stdio Mode (Client-Spawned)
+For backward compatibility with clients that spawn the process:
+
+```bash
+uv run src/memcore/main.py --mode stdio
+```
+
+#### MCP Client Configuration
+
+For SSE mode, configure your MCP client (e.g., Kimi CLI) to connect to the running server:
+
+```json
+{
+  "mcpServers": {
+    "memcore": {
+      "url": "http://127.0.0.1:8080/sse"
+    }
+  }
+}
+```
+
+For stdio mode (legacy):
+```json
+{
+  "mcpServers": {
+    "memcore": {
+      "command": "uv",
+      "args": ["run", "src/memcore/main.py", "--mode", "stdio"]
+    }
+  }
+}
 ```
 
 ## Documentation

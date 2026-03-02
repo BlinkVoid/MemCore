@@ -1,7 +1,7 @@
 [project]
 name = "memcore"
 version = "0.1.0"
-description = "Add your description here"
+description = "Standalone agentic memory management system for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,3 +17,7 @@ dependencies = [
     "strands-sdk>=10.0.2",
     "watchdog>=6.0.0",
 ]
+
+[project.optional-dependencies]
+sse = ["starlette>=0.45.0", "uvicorn>=0.34.0"]
+all = ["starlette>=0.45.0", "uvicorn>=0.34.0"]

@@ -1,9 +1,14 @@
 import asyncio
 import os
 import uuid
+import argparse
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Determine project root for absolute data paths
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(PROJECT_ROOT, "dataCrystal")
 
 try:
     from strands_sdk.client import StrandsClient
@@ -15,6 +20,7 @@ except ImportError:
     AgentConfig = None
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
 import mcp.types as types
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -22,20 +28,45 @@ from src.memcore.utils.llm import LLMInterface
 from src.memcore.gatekeeper.router import GatekeeperRouter
 from src.memcore.storage.vector import VectorStore
 from src.memcore.storage.graph import GraphStore
+from src.memcore.storage.queue import ConsolidationQueue
 from src.memcore.memory.tiered import TieredContextManager
 from src.memcore.memory.consolidation import MemoryConsolidator
 from src.memcore.utils.watcher import DocumentWatcher
+from src.memcore.utils.reporter import HTMLReporter
+
+# Import optional dependencies for SSE mode
+try:
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+    from starlette.responses import PlainTextResponse
+    from starlette.requests import Request
+    STARLETTE_AVAILABLE = True
+except ImportError:
+    STARLETTE_AVAILABLE = False
 
 load_dotenv()
 
 class MemCoreAgent:
     def __init__(self):
         self.llm = LLMInterface()
-        self.vector_store = VectorStore(dimension=self.llm.get_embedding_dimension())
-        self.graph_store = GraphStore()
+        # Ensure data directory exists
+        os.makedirs(DATA_DIR, exist_ok=True)
+        
+        # Initialize storage with absolute paths
+        vector_storage_path = os.path.join(DATA_DIR, "qdrant_storage")
+        graph_db_path = os.path.join(DATA_DIR, "memcore_graph.db")
+        
+        self.vector_store = VectorStore(location=vector_storage_path, dimension=self.llm.get_embedding_dimension())
+        self.graph_store = GraphStore(db_path=graph_db_path)
         self.router = GatekeeperRouter(self.llm)
-        self.tiered_manager = TieredContextManager(self.vector_store)
-        self.consolidator = MemoryConsolidator(self.llm, self.vector_store, self.graph_store)
+        self.tiered_manager = TieredContextManager(self.vector_store, self.graph_store)
+        # Initialize consolidation queue with stateful persistence
+        queue_db_path = os.path.join(DATA_DIR, "consolidation_queue.db")
+        self.consolidation_queue = ConsolidationQueue(db_path=queue_db_path)
+        
+        self.consolidator = MemoryConsolidator(
+            self.llm, self.vector_store, self.graph_store, self.consolidation_queue
+        )
         
         # Strand SDK setup (Optional platform connection)
         strands_key = os.getenv("STRANDS_API_KEY")
@@ -48,9 +79,11 @@ class MemCoreAgent:
             else:
                 print("Notice: STRANDS_API_KEY not found. Running in local-only mode.")
         
-        # Scheduler for consolidation
+        # Scheduler for consolidation and reporting
         self.scheduler = AsyncIOScheduler()
         self.scheduler.add_job(self.consolidate_memories, 'interval', hours=8)
+        self.scheduler.add_job(self.process_consolidation_queue, 'interval', minutes=30)
+        self.scheduler.add_job(self.generate_status_report, 'interval', hours=1)
         
         # Document Watcher
         watch_dir = os.getenv("OBSIDIAN_VAULT_PATH")
@@ -58,6 +91,9 @@ class MemCoreAgent:
             self.watcher = DocumentWatcher(watch_dir, self.reindex_file)
         else:
             self.watcher = None
+        
+        # HTML Reporter
+        self.reporter = HTMLReporter(output_dir=os.path.join(DATA_DIR, "reports"))
         
         # MCP Server setup
         self.mcp_server = Server("memcore-gatekeeper")
@@ -104,7 +140,10 @@ class MemCoreAgent:
         print(f"Re-indexed {len(data.get('entries', []))} entries from {file_path}")
 
     async def consolidate_memories(self):
-        """Background task for memory consolidation."""
+        """
+        Background task for memory consolidation.
+        Queues raw memories for processing; actual processing happens via process_consolidation_queue.
+        """
         print(f"[{datetime.now()}] Checking for memories to consolidate...")
         
         # 1. Fetch raw memories
@@ -114,7 +153,7 @@ class MemCoreAgent:
             self.graph_store.set_metadata("last_consolidation", datetime.now().isoformat())
             return
 
-        print(f"Consolidating {len(raw_results)} memories...")
+        print(f"Queueing {len(raw_results)} memories for consolidation...")
         
         # 2. Convert to format consolidator expects
         memories_to_process = [
@@ -128,20 +167,45 @@ class MemCoreAgent:
             for r in raw_results
         ]
 
-        # 3. Run multi-stage consolidation
-        await self.consolidator.consolidate(memories_to_process)
+        # 3. Queue for background processing (survives restarts)
+        result = await self.consolidator.consolidate(memories_to_process, use_queue=True)
+        print(f"Consolidation queue status: {result}")
 
-        # 4. Mark processed memories as 'archived_raw'
-        for r in raw_results:
-            self.vector_store.client.set_payload(
-                collection_name=self.vector_store.collection_name,
-                payload={"type": "archived_raw"},
-                points=[r.id]
-            )
-
-        # 5. Update metadata
+        # 4. Update metadata
         self.graph_store.set_metadata("last_consolidation", datetime.now().isoformat())
-        print("Consolidation complete.")
+        
+    async def process_consolidation_queue(self):
+        """
+        Process pending jobs from the consolidation queue.
+        Runs every 30 minutes to work through queued memories.
+        """
+        pending = self.consolidation_queue.get_pending_count()
+        if pending == 0:
+            return
+            
+        print(f"[{datetime.now()}] Processing consolidation queue ({pending} pending jobs)...")
+        
+        try:
+            result = await self.consolidator.process_queue(batch_size=10)
+            print(f"Queue processing complete: {result['completed']} completed, {result['failed']} failed")
+        except Exception as e:
+            print(f"Error processing consolidation queue: {e}")
+
+    async def generate_status_report(self):
+        """Generate HTML status report with memory statistics."""
+        print(f"[{datetime.now()}] Generating status report...")
+        
+        try:
+            # Get stats from storage
+            vector_stats = self.vector_store.get_stats()
+            graph_stats = self.graph_store.get_stats()
+            queue_stats = self.consolidation_queue.get_stats()
+            
+            # Generate and save report
+            report_path = self.reporter.save_report(vector_stats, graph_stats, queue_stats)
+            print(f"Status report generated: {report_path}")
+        except Exception as e:
+            print(f"Error generating status report: {e}")
 
     def _setup_mcp_tools(self):
         @self.mcp_server.list_tools()
@@ -155,6 +219,7 @@ class MemCoreAgent:
                         "properties": {
                             "query": {"type": "string"},
                             "quadrant_hint": {"type": "string", "enum": ["coding", "personal", "research", "ai_instructions"]},
+                            "context_limit": {"type": "integer", "description": "Max tokens to return (default: 4000)"},
                         },
                         "required": ["query"],
                     },
@@ -214,6 +279,14 @@ class MemCoreAgent:
                         },
                         "required": ["memory_id"]
                     }
+                ),
+                types.Tool(
+                    name="mem_stats",
+                    description="Get memory statistics and system status. Returns current memory counts and system health.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    }
                 )
             ]
 
@@ -229,6 +302,8 @@ class MemCoreAgent:
                 return await self.handle_feedback(arguments)
             elif name == "fetch_source":
                 return await self.handle_fetch_source(arguments["memory_id"])
+            elif name == "mem_stats":
+                return await self.handle_stats()
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
     async def handle_fetch_source(self, memory_id: str) -> list[types.TextContent]:
@@ -261,30 +336,34 @@ class MemCoreAgent:
             search_quadrants.append("ai_instructions")
             
         l0_results = await self.tiered_manager.get_l0_context(query_vector, quadrants=search_quadrants)
-        
-        # 3. Scoring
-        scored_memories = self.tiered_manager.score_memories(l0_results)
-        
-        # 4. Formatted Response (Separating Instructions and Knowledge)
+
+        # 3. Create request node early (for dynamic scoring context)
+        request_id = str(uuid.uuid4())
+
+        # 4. Scoring with dynamic relevancy (uses graph weights from previous feedback)
+        scored_memories = self.tiered_manager.score_memories(l0_results, request_id=request_id)
+
+        # 5. Formatted Response (Separating Instructions and Knowledge)
         instructions = [m for m in scored_memories if "ai_instructions" in m["quadrants"]]
         knowledge = [m for m in scored_memories if "ai_instructions" not in m["quadrants"]]
 
         response_text = f"Quadrant: {quadrant}\n\n"
-        
+
         if instructions:
             response_text += "--- Relevant Instructions (SOPs) ---\n"
             for m in instructions[:3]:
-                response_text += f"- [{m['id']}] {m['summary']} (Score: {m['final_score']:.2f})\n"
+                boost_info = f" [boost: {m.get('dynamic_boost', 1.0):.2f}]" if m.get('dynamic_boost', 1.0) != 1.0 else ""
+                response_text += f"- [{m['id']}] {m['summary']} (Score: {m['final_score']:.2f}){boost_info}\n"
                 self.vector_store.update_memory_access(m['id']) # Update recency
             response_text += "\n"
 
         response_text += "--- Knowledge & Context ---\n"
         for i, mem in enumerate(knowledge[:5]):
-            response_text += f"{i+1}. [{mem['id']}] {mem['summary']} (Score: {mem['final_score']:.2f})\n"
+            boost_info = f" [boost: {mem.get('dynamic_boost', 1.0):.2f}]" if mem.get('dynamic_boost', 1.0) != 1.0 else ""
+            response_text += f"{i+1}. [{mem['id']}] {mem['summary']} (Score: {mem['final_score']:.2f}){boost_info}\n"
             self.vector_store.update_memory_access(mem['id']) # Update recency
-        
-        # 5. Graph Mapping (Record the request and the actual served answer)
-        request_id = str(uuid.uuid4())
+
+        # 6. Graph Mapping (Record the request and link to memories that fulfilled it)
         self.graph_store.add_request_node(request_id, query, response_text)
         for mem in scored_memories[:3]:
             self.graph_store.link_request_to_memory(request_id, mem["id"])
@@ -356,15 +435,146 @@ class MemCoreAgent:
 
         return [types.TextContent(type="text", text="Feedback recorded. Edge weights updated.")]
 
-    async def run(self):
-        # 1. Start scheduler
+    async def handle_stats(self) -> list[types.TextContent]:
+        """Return memory statistics."""
+        vector_stats = self.vector_store.get_stats()
+        graph_stats = self.graph_store.get_stats()
+        queue_stats = self.consolidation_queue.get_stats()
+        
+        report_path = os.path.join(DATA_DIR, "reports", "latest.html")
+        
+        response_text = f"""=== MemCore Status Report ===
+
+Vector Database:
+  Total Memories: {vector_stats.get('total_memories', 0)}
+  Dimension: {vector_stats.get('dimension', 'N/A')}
+  Collection: {vector_stats.get('collection_name', 'N/A')}
+  
+  By Type:
+"""
+        for mem_type, count in sorted(vector_stats.get('by_type', {}).items(), key=lambda x: x[1], reverse=True):
+            response_text += f"    - {mem_type}: {count}\n"
+        
+        response_text += f"""
+  By Quadrant:
+"""
+        for quad, count in sorted(vector_stats.get('by_quadrant', {}).items(), key=lambda x: x[1], reverse=True):
+            response_text += f"    - {quad}: {count}\n"
+        
+        response_text += f"""
+Graph Database:
+  Total Nodes: {graph_stats.get('total_nodes', 0)}
+  Total Edges: {graph_stats.get('total_edges', 0)}
+  
+  Nodes by Type:
+"""
+        for node_type, count in sorted(graph_stats.get('nodes_by_type', {}).items(), key=lambda x: x[1], reverse=True):
+            response_text += f"    - {node_type}: {count}\n"
+        
+        response_text += f"""
+Consolidation Queue:
+  Pending: {queue_stats.get('pending', 0)}
+  Processing: {queue_stats.get('processing', 0)}
+  Retrying: {queue_stats.get('retrying', 0)}
+  Completed (total): {queue_stats.get('completed', 0)}
+  Failed (total): {queue_stats.get('failed', 0)}
+  
+System:
+  Last Consolidation: {graph_stats.get('last_consolidation', 'Never')}
+  HTML Report: {report_path}
+"""
+        return [types.TextContent(type="text", text=response_text)]
+
+    async def run_stdio(self):
+        """Run in stdio mode (for client-spawned processes)."""
+        async with stdio_server() as (read_stream, write_stream):
+            await self.mcp_server.run(
+                read_stream,
+                write_stream,
+                self.mcp_server.create_initialization_options()
+            )
+    
+    async def run_sse(self, host: str = "127.0.0.1", port: int = 8080):
+        """Run in SSE mode (standalone service)."""
+        if not STARLETTE_AVAILABLE:
+            print("Error: SSE mode requires starlette. Install with: uv add starlette uvicorn")
+            return
+        
+        from uvicorn import Config, Server as UvicornServer
+        
+        sse_transport = SseServerTransport("/messages")
+        
+        async def handle_sse(request):
+            """Handle SSE connections."""
+            async with sse_transport.connect_sse(
+                request.scope, request.receive, request._send
+            ) as (read_stream, write_stream):
+                await self.mcp_server.run(
+                    read_stream,
+                    write_stream,
+                    self.mcp_server.create_initialization_options()
+                )
+        
+        async def handle_messages(request):
+            """Handle POST messages from client."""
+            await sse_transport.handle_post_message(
+                request.scope, request.receive, request._send
+            )
+            return PlainTextResponse("OK")
+        
+        async def handle_report(request):
+            """Serve the HTML status report."""
+            report_path = os.path.join(DATA_DIR, "reports", "latest.html")
+            if os.path.exists(report_path):
+                with open(report_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                from starlette.responses import HTMLResponse
+                return HTMLResponse(content)
+            else:
+                return PlainTextResponse("Report not generated yet. Please wait for the hourly update.", status_code=503)
+        
+        routes = [
+            Route("/sse", endpoint=handle_sse),
+            Route("/messages", endpoint=handle_messages, methods=["POST"]),
+            Route("/health", endpoint=lambda _: PlainTextResponse("OK"), methods=["GET"]),
+            Route("/status", endpoint=handle_report, methods=["GET"]),
+        ]
+        
+        app = Starlette(routes=routes)
+        config = Config(app, host=host, port=port, log_level="info")
+        server = UvicornServer(config)
+        
+        print(f"MemCore SSE server running on http://{host}:{port}")
+        print(f"  - SSE endpoint: http://{host}:{port}/sse")
+        print(f"  - Message endpoint: http://{host}:{port}/messages")
+        print(f"  - Health check: http://{host}:{port}/health")
+        print(f"  - Status report: http://{host}:{port}/status")
+        
+        await server.serve()
+    
+    async def run(self, mode: str = "stdio", host: str = "127.0.0.1", port: int = 8080):
+        # 1. Crash recovery: Reset any 'processing' jobs back to 'pending'
+        recovered = self.consolidator.recover_from_crash()
+        if recovered > 0:
+            print(f"[Recovery] Reset {recovered} jobs from 'processing' to 'pending' (crash recovery)")
+        
+        # 2. Start scheduler
         self.scheduler.start()
         
-        # 2. Start watcher
+        # 3. Generate initial status report
+        asyncio.create_task(self.generate_status_report())
+        
+        # 4. Start watcher
         if self.watcher:
             self.watcher.start()
         
-        # 3. Check if we need immediate consolidation
+        # 5. Process any pending queue items immediately
+        pending = self.consolidation_queue.get_pending_count()
+        if pending > 0:
+            print(f"[Startup] {pending} consolidation jobs pending from previous session")
+            asyncio.create_task(self.process_consolidation_queue())
+        
+        # 6. Check if we need immediate consolidation
         last_con = self.graph_store.get_metadata("last_consolidation")
         if last_con:
             last_dt = datetime.fromisoformat(last_con)
@@ -375,14 +585,38 @@ class MemCoreAgent:
             # First run
             asyncio.create_task(self.consolidate_memories())
 
-        # 3. Start MCP loop
-        async with stdio_server() as (read_stream, write_stream):
-            await self.mcp_server.run(
-                read_stream,
-                write_stream,
-                self.mcp_server.create_initialization_options()
-            )
+        # 5. Start MCP loop in chosen mode
+        if mode == "stdio":
+            await self.run_stdio()
+        elif mode == "sse":
+            await self.run_sse(host, port)
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Use 'stdio' or 'sse'.")
+
+def main():
+    parser = argparse.ArgumentParser(description="MemCore - Agentic Memory Management System")
+    parser.add_argument(
+        "--mode", 
+        choices=["stdio", "sse"], 
+        default="stdio",
+        help="Transport mode: stdio (client-spawned) or sse (standalone service)"
+    )
+    parser.add_argument(
+        "--host", 
+        default="127.0.0.1",
+        help="Host to bind to in SSE mode (default: 127.0.0.1)"
+    )
+    parser.add_argument(
+        "--port", 
+        type=int, 
+        default=8080,
+        help="Port to bind to in SSE mode (default: 8080)"
+    )
+    
+    args = parser.parse_args()
+    
+    agent = MemCoreAgent()
+    asyncio.run(agent.run(mode=args.mode, host=args.host, port=args.port))
 
 if __name__ == "__main__":
-    agent = MemCoreAgent()
-    asyncio.run(agent.run())
+    main()
