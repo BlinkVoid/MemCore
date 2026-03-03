@@ -19,14 +19,14 @@ This document outlines the technical roadmap for building the MemCore standalone
 - [x] Initial MCP interface (`mem_request`, `mem_rem`).
 
 ## 3. Phase 2: Memory Intelligence
-- [ ] **Advanced Tiered Retrieval:** Refine the L0 -> L1 -> L2 loop to be more token-efficient.
+- [x] **Advanced Tiered Retrieval:** Progressive L0 -> L1 with token budgeting; L2 on-demand via fetch_detail.
 - [x] **Dynamic Relevancy:** Graph edge weights boost memory scores; feedback strengthens/weakens retrieval.
-- [ ] **Instruction Extraction:** Build the specific pipeline for `ai_instructions` quadrant.
+- [x] **Instruction Extraction:** Specialized pipeline with validation, types (constraint/standard/workflow/behavior/preference), override tracking.
 
-## 4. Phase 3: Autonomous Consolidation (Sleep Phase)
+## 4. Phase 3: Autonomous Consolidation (Sleep Phase) - COMPLETE
 - [x] **Stateful Queue:** SQLite-backed job queue survives restarts with retry logic.
-- [ ] **Fact Synthesis:** Implement LLM-driven deduplication and "Reflection" generation.
-- [ ] **Conflict Resolution:** Build the hierarchy-based resolution logic for contradictory memories.
+- [x] **Fact Synthesis:** LLM-driven deduplication and "Reflection" generation from related memories.
+- [x] **Conflict Resolution:** Hierarchy-based resolution logic for contradictory memories implemented.
 
 ## 5. Phase 4: Feedback & Optimization
 - [ ] **Root Cause Analysis:** Implement the "Why was this retrieval wrong?" loop.

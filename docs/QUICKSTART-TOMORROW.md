@@ -55,18 +55,46 @@ Expected output:
 .\start-memcore.ps1 -Background
 ```
 
-#### Option B: Manual Start
+#### Option B: Manual Start (with Dashboard)
 
 ```bash
-# Install SSE dependencies (first time only)
-uv sync --extra sse
+# Install dashboard dependencies (first time only)
+uv sync --extra dashboard
 
-# Start the server
-uv run scripts/run_server.py
+# Start the server with web dashboard (default: MCP on 8080, Dashboard on 8081)
+uv run src/memcore/main.py --mode http --port 8080 --dashboard-port 8081
 
-# Or with custom settings
-uv run src/memcore/main.py --mode sse --host 0.0.0.0 --port 9000
+# Custom ports
+uv run src/memcore/main.py --mode http --port 9000 --dashboard-port 9001
+
+# Disable dashboard
+uv run src/memcore/main.py --mode http --dashboard-port 0
 ```
+
+Both services start together:
+- **MCP Server**: http://localhost:8080/mcp
+- **Web Dashboard**: http://localhost:8081
+
+The dashboard provides:
+- Memory browser with search and filters
+- Real-time statistics
+- Reflections viewer
+- Weight visualization
+
+#### Option C: System Tray App (Windows)
+
+```powershell
+# Install tray dependencies (first time only)
+uv sync --extra tray
+
+# Run the system tray app
+uv run scripts/run_tray.py
+```
+
+The tray app provides visual status indicators and quick controls:
+- 🟢 Green icon = Server running
+- 🔴 Red icon = Server stopped
+- 🟡 Yellow icon = Error state
 
 The server will start at `http://127.0.0.1:8080` by default.
 
@@ -82,7 +110,7 @@ Once MemCore is running, configure your MCP client to connect to it.
 {
   "mcpServers": {
     "memcore": {
-      "url": "http://127.0.0.1:8080/sse"
+      "url": "http://127.0.0.1:8080/mcp"
     }
   }
 }
@@ -94,7 +122,7 @@ Once MemCore is running, configure your MCP client to connect to it.
 {
   "mcpServers": {
     "memcore": {
-      "url": "http://127.0.0.1:8080/sse"
+      "url": "http://127.0.0.1:8080/mcp"
     }
   }
 }
@@ -128,8 +156,8 @@ Should return: `OK`
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 │                         │                                    │
 │                    ┌────┴────┐                               │
-│                    │ SSE API │ ← Multiple clients connect    │
-│                    │:8080   │   here                         │
+│                    │HTTP API │ ← Multiple clients connect    │
+│                    │:8080/mcp│   here                        │
 │                    └────┬────┘                               │
 └─────────────────────────┼───────────────────────────────────┘
                           │
@@ -158,8 +186,14 @@ Once connected, clients can use these MCP tools:
 | `mem_query` | Retrieve context and memory based on query |
 | `mem_save` | Store a new memory (short-term or long-term) |
 | `fetch_detail` | Fetch full details for a specific memory ID |
-| `submit_feedback` | Submit feedback on memory retrieval |
+| `submit_feedback` | Submit feedback on memory retrieval (triggers RCA) |
 | `fetch_source` | Retrieve original source document |
+| `mem_stats` | Get memory statistics and system status |
+| `fetch_reflections` | Get synthesized patterns and insights |
+| `view_conflicts` | View conflicting memories requiring resolution |
+| `optimization_report` | View feedback-driven weight adjustments |
+| `export_memories` | Export memories to JSON/Markdown/CSV |
+| `import_memories` | Import memories from JSON/Obsidian/CSV |
 
 ---
 
@@ -174,17 +208,27 @@ MemCore/
 │   │   └── router.py        # Query classification (fast model)
 │   ├── memory/
 │   │   ├── tiered.py        # L0/L1/L2 context management
-│   │   └── consolidation.py # STM → LTM (strong model)
+│   │   ├── consolidation.py # STM → LTM (strong model)
+│   │   └── feedback_optimizer.py  # Phase 4 RCA & weight tuning
 │   ├── storage/
 │   │   ├── vector.py        # Qdrant vector store
 │   │   └── graph.py         # NetworkX graph store
+│   ├── tray/
+│   │   └── app.py           # Windows system tray app
+│   ├── dashboard/
+│   │   └── server.py        # Web dashboard server
 │   └── utils/
 │       ├── llm.py           # LLM interface, embeddings
 │       ├── equations.py     # Scoring formulas
+│       ├── import_export.py # Import/Export tools
 │       └── watcher.py       # File system watcher
 ├── scripts/
-│   ├── run_server.py        # SSE server helper
+│   ├── run_server.py        # HTTP server helper
 │   ├── run_stdio.py         # Stdio mode helper
+│   ├── run_tray.py          # System tray app
+│   ├── run_dashboard.py     # Web dashboard
+│   ├── export_memories.py   # Export memories
+│   ├── import_memories.py   # Import memories
 │   └── verify_config.py     # Configuration checker
 ├── docs/
 │   └── QUICKSTART-TOMORROW.md  # This file
@@ -203,7 +247,11 @@ MemCore/
 | Embedding | `multilingual-e5-large` | 1024-dim, 100+ languages |
 | Vector DB | Qdrant | Local storage in `data/qdrant_storage` |
 | Graph DB | SQLite + NetworkX | Local storage in `data/memcore_graph.db` |
-| Default Port | `8080` | Configurable via `--port` |
+| MCP Port | `8080` | Configurable via `--port` |
+| Dashboard Port | `8081` | Configurable via `--dashboard-port` |
+| MCP Transport | `streamable-http` | Endpoint at `/mcp` (not `/sse`) |
+| System Tray | Optional | `uv sync --extra tray` |
+| Dashboard | Optional | `uv sync --extra dashboard`, auto-starts with `--dashboard-port` |
 
 ---
 

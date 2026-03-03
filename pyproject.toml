@@ -13,11 +13,16 @@ dependencies = [
     "onnxruntime<1.20.0",
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.2.1",
+    "python-frontmatter>=1.0.0",
     "qdrant-client>=1.17.0",
     "strands-sdk>=10.0.2",
     "watchdog>=6.0.0",
 ]
 
 [project.optional-dependencies]
-sse = ["starlette>=0.45.0", "uvicorn>=0.34.0"]
-all = ["starlette>=0.45.0", "uvicorn>=0.34.0"]
+tray = ["pystray>=0.19.5", "pillow>=11.0.0", "requests>=2.32.0"]
+dashboard = ["starlette>=0.45.0", "uvicorn>=0.34.0"]
+all = ["pystray>=0.19.5", "pillow>=11.0.0", "requests>=2.32.0", "starlette>=0.45.0", "uvicorn>=0.34.0"]
+
+[project.scripts]
+memcore-tray = "src.memcore.tray.app:run_tray_app"

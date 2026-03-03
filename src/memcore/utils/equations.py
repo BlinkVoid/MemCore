@@ -24,6 +24,33 @@ def calculate_importance_score(
     """
     return (w_rel * relevance) + (w_rec * recency) + (w_imp * importance)
 
+def calculate_importance_score_dynamic(
+    relevance: float,
+    recency: float,
+    importance: float,
+    w_rel: float = 0.5,
+    w_rec: float = 0.3,
+    w_imp: float = 0.2
+) -> float:
+    """
+    Calculates memory score with normalized dynamic weights.
+
+    Default weights (sum to 1.0):
+    - W_rel = 0.5 (relevance weight)
+    - W_rec = 0.3 (recency weight)
+    - W_imp = 0.2 (importance weight)
+
+    These weights can be auto-tuned via feedback optimization.
+    """
+    # Ensure weights sum to 1.0 for normalization
+    total = w_rel + w_rec + w_imp
+    if total != 1.0:
+        w_rel /= total
+        w_rec /= total
+        w_imp /= total
+
+    return (w_rel * relevance) + (w_rec * recency) + (w_imp * importance)
+
 def estimate_tokens(text: str) -> int:
     """
     Rough token estimation for text.

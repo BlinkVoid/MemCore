@@ -1,15 +1,17 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from src.memcore.storage.vector import VectorStore
 from src.memcore.storage.graph import GraphStore
 from src.memcore.utils.equations import (
-    calculate_importance_score, calculate_recency_score, TokenBudget, estimate_tokens
+    calculate_importance_score_dynamic, calculate_recency_score, TokenBudget, estimate_tokens
 )
 from datetime import datetime
 
 class TieredContextManager:
-    def __init__(self, vector_store: VectorStore, graph_store: Optional[GraphStore] = None):
+    def __init__(self, vector_store: VectorStore, graph_store: Optional[GraphStore] = None,
+                 weight_provider: Optional[Callable[[], Dict[str, float]]] = None):
         self.vector_store = vector_store
         self.graph_store = graph_store
+        self.weight_provider = weight_provider  # Callback to get dynamic weights
         self.default_token_budget = 4000  # Default max tokens for context
 
     async def get_l0_context(self, query_vector: List[float], quadrants: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -56,6 +58,8 @@ class TieredContextManager:
 
         Includes dynamic relevancy boost from graph edge weights when graph_store
         is available. Positive feedback on a memory increases its score.
+
+        Also uses globally adjusted weights (W_rel, W_rec, W_imp) from feedback optimizer.
         """
         scored_results = []
 
@@ -64,6 +68,11 @@ class TieredContextManager:
         if self.graph_store and l0_results:
             memory_ids = [item["id"] for item in l0_results]
             dynamic_weights = self.graph_store.get_memory_weights(memory_ids, request_id)
+
+        # Get global weights from feedback optimizer (or use defaults)
+        global_weights = self.weight_provider() if self.weight_provider else {
+            "W_rel": 0.5, "W_rec": 0.3, "W_imp": 0.2
+        }
 
         for item in l0_results:
             last_accessed_str = item.get("last_accessed")
@@ -75,12 +84,14 @@ class TieredContextManager:
             recency = calculate_recency_score(last_accessed)
             importance = item.get("importance", 0.5)
 
-            # Calculate base score using Importance Equation
-            base_score = calculate_importance_score(
+            # Calculate base score using dynamic Importance Equation
+            base_score = calculate_importance_score_dynamic(
                 relevance=item["score"],
                 recency=recency,
                 importance=importance,
-                w_rel=relevance_weight
+                w_rel=global_weights.get("W_rel", 0.5),
+                w_rec=global_weights.get("W_rec", 0.3),
+                w_imp=global_weights.get("W_imp", 0.2)
             )
 
             # Apply dynamic weight multiplier from graph feedback

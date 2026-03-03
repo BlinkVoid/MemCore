@@ -848,12 +848,8 @@ class HTMLReporter:
                     <a href="/health" class="info-value" style="text-decoration: none;">/health →</a>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">SSE Endpoint</span>
-                    <a href="/sse" class="info-value" style="text-decoration: none;">/sse →</a>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">MCP Messages</span>
-                    <span class="info-value">POST /messages</span>
+                    <span class="info-label">MCP Endpoint</span>
+                    <a href="/mcp" class="info-value" style="text-decoration: none;">/mcp →</a>
                 </div>
             </div>
             

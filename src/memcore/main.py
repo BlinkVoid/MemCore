@@ -18,9 +18,7 @@ except ImportError:
     STRANDS_AVAILABLE = False
     StrandsClient = None
     AgentConfig = None
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.server.sse import SseServerTransport
+from mcp.server.fastmcp import FastMCP
 import mcp.types as types
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -31,18 +29,36 @@ from src.memcore.storage.graph import GraphStore
 from src.memcore.storage.queue import ConsolidationQueue
 from src.memcore.memory.tiered import TieredContextManager
 from src.memcore.memory.consolidation import MemoryConsolidator
+from src.memcore.memory.feedback_optimizer import FeedbackOptimizer
+from src.memcore.memory.advanced_search import AdvancedSearch, SearchFilters
 from src.memcore.utils.watcher import DocumentWatcher
 from src.memcore.utils.reporter import HTMLReporter
+from src.memcore.utils.import_export import MemoryExporter, MemoryImporter
+from src.memcore.utils.backup import MemoryBackupManager
+from src.memcore.utils.garbage_collection import MemoryGarbageCollector
+from src.memcore.utils.analytics import MemoryAnalytics
+from src.memcore.utils.templates import MemoryTemplateManager
+from src.memcore.utils.sync import MultiDeviceSync
 
-# Import optional dependencies for SSE mode
+# Skills
+from src.memcore.skills import (
+    FeedbackSkill,
+    VaultSyncSkill,
+    ConsolidateExportSkill,
+    RecategorizeSkill,
+    IngestConsolidatedSkill,
+)
+
+# Task Management
+from src.memcore.tasks import TaskManager, ReminderScheduler
+
+# Optional dashboard import
 try:
-    from starlette.applications import Starlette
-    from starlette.routing import Route, Mount
-    from starlette.responses import PlainTextResponse
-    from starlette.requests import Request
-    STARLETTE_AVAILABLE = True
+    from src.memcore.dashboard.server import DashboardServer
+    DASHBOARD_AVAILABLE = True
 except ImportError:
-    STARLETTE_AVAILABLE = False
+    DASHBOARD_AVAILABLE = False
+    DashboardServer = None
 
 load_dotenv()
 
@@ -51,23 +67,91 @@ class MemCoreAgent:
         self.llm = LLMInterface()
         # Ensure data directory exists
         os.makedirs(DATA_DIR, exist_ok=True)
-        
+
         # Initialize storage with absolute paths
         vector_storage_path = os.path.join(DATA_DIR, "qdrant_storage")
         graph_db_path = os.path.join(DATA_DIR, "memcore_graph.db")
-        
+
         self.vector_store = VectorStore(location=vector_storage_path, dimension=self.llm.get_embedding_dimension())
         self.graph_store = GraphStore(db_path=graph_db_path)
         self.router = GatekeeperRouter(self.llm)
-        self.tiered_manager = TieredContextManager(self.vector_store, self.graph_store)
+
+        # Initialize feedback optimizer for Phase 4
+        self.feedback_optimizer = FeedbackOptimizer(self.llm, self.graph_store)
+
+        # Tiered manager with dynamic weight support
+        self.tiered_manager = TieredContextManager(
+            self.vector_store,
+            self.graph_store,
+            weight_provider=self.feedback_optimizer.get_current_weights
+        )
+
         # Initialize consolidation queue with stateful persistence
         queue_db_path = os.path.join(DATA_DIR, "consolidation_queue.db")
         self.consolidation_queue = ConsolidationQueue(db_path=queue_db_path)
-        
+
         self.consolidator = MemoryConsolidator(
             self.llm, self.vector_store, self.graph_store, self.consolidation_queue
         )
-        
+
+        # Import/Export tools
+        self.exporter = MemoryExporter(self.vector_store, self.graph_store)
+        self.importer = MemoryImporter(self.llm, self.vector_store, self.graph_store)
+
+        # Advanced search
+        self.advanced_search = AdvancedSearch(self.vector_store, self.llm)
+
+        # Backup manager
+        self.backup_manager = MemoryBackupManager(DATA_DIR)
+
+        # Garbage collector
+        self.garbage_collector = MemoryGarbageCollector(
+            self.vector_store,
+            self.graph_store,
+            self.consolidation_queue
+        )
+
+        # Analytics
+        self.analytics = MemoryAnalytics(self.vector_store, self.graph_store)
+
+        # Template manager
+        self.template_manager = MemoryTemplateManager()
+
+        # Multi-device sync
+        self.sync_manager = MultiDeviceSync(DATA_DIR)
+
+        # Skills (user-facing slash commands)
+        self.feedback_skill = FeedbackSkill(self.feedback_optimizer)
+        self.vault_sync_skill = VaultSyncSkill(
+            getattr(self, 'document_watcher', None),
+            self.vector_store,
+            self.llm
+        )
+        self.consolidate_export_skill = ConsolidateExportSkill(
+            self.vector_store,
+            self.graph_store,
+            self.llm,
+            DATA_DIR
+        )
+        self.recategorize_skill = RecategorizeSkill(
+            self.vector_store,
+            self.graph_store
+        )
+        self.ingest_consolidated_skill = IngestConsolidatedSkill(
+            self.vector_store,
+            self.graph_store,
+            self.llm,
+            DATA_DIR
+        )
+
+        # Task Management
+        self.task_manager = TaskManager(DATA_DIR, self.vector_store)
+        self.reminder_scheduler = ReminderScheduler(self.task_manager, self.llm)
+
+        # Dashboard server (initialized in run())
+        self.dashboard_server = None
+        self.dashboard_port = 8081
+
         # Strand SDK setup (Optional platform connection)
         strands_key = os.getenv("STRANDS_API_KEY")
         if strands_key and STRANDS_AVAILABLE:
@@ -95,8 +179,8 @@ class MemCoreAgent:
         # HTML Reporter
         self.reporter = HTMLReporter(output_dir=os.path.join(DATA_DIR, "reports"))
         
-        # MCP Server setup
-        self.mcp_server = Server("memcore-gatekeeper")
+        # MCP Server setup (FastMCP)
+        self.mcp_server = FastMCP("memcore-gatekeeper")
         self._setup_mcp_tools()
 
     async def reindex_file(self, file_path: str):
@@ -186,8 +270,9 @@ class MemCoreAgent:
         print(f"[{datetime.now()}] Processing consolidation queue ({pending} pending jobs)...")
         
         try:
-            result = await self.consolidator.process_queue(batch_size=10)
-            print(f"Queue processing complete: {result['completed']} completed, {result['failed']} failed")
+            result = await self.consolidator.process_queue_with_synthesis(batch_size=10)
+            reflections = result.get('reflections_generated', 0)
+            print(f"Queue processing complete: {result['completed']} completed, {result['failed']} failed, {reflections} reflections generated")
         except Exception as e:
             print(f"Error processing consolidation queue: {e}")
 
@@ -208,103 +293,874 @@ class MemCoreAgent:
             print(f"Error generating status report: {e}")
 
     def _setup_mcp_tools(self):
-        @self.mcp_server.list_tools()
-        async def list_tools() -> list[types.Tool]:
-            return [
-                types.Tool(
-                    name="mem_query",
-                    description="Retrieve context and memory based on a query.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"},
-                            "quadrant_hint": {"type": "string", "enum": ["coding", "personal", "research", "ai_instructions"]},
-                            "context_limit": {"type": "integer", "description": "Max tokens to return (default: 4000)"},
-                        },
-                        "required": ["query"],
-                    },
-                ),
-                types.Tool(
-                    name="mem_save",
-                    description="Store a new memory (short-term or long-term).",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "content": {"type": "string"},
-                            "summary": {"type": "string"},
-                            "quadrants": {"type": "array", "items": {"type": "string"}},
-                            "metadata": {
-                                "type": "object",
-                                "properties": {
-                                    "importance_override": {"type": "number"},
-                                    "source_uri": {"type": "string"}
-                                }
-                            }
-                        },
-                        "required": ["content", "summary"],
-                    },
-                ),
-                types.Tool(
-                    name="fetch_detail",
-                    description="Fetch L2 full details for a specific memory ID.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "memory_id": {"type": "string"},
-                        },
-                        "required": ["memory_id"],
-                    },
-                ),
-                types.Tool(
-                    name="submit_feedback",
-                    description="Submit feedback on a memory retrieval to improve accuracy.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "request_id": {"type": "string"},
-                            "memory_id": {"type": "string"},
-                            "rating": {"type": "integer", "description": "1 for good, -1 for bad"},
-                            "reason": {"type": "string"}
-                        },
-                        "required": ["request_id", "memory_id", "rating"]
-                    }
-                ),
-                types.Tool(
-                    name="fetch_source",
-                    description="Retrieve the original source document content (e.g., Obsidian markdown).",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "memory_id": {"type": "string"}
-                        },
-                        "required": ["memory_id"]
-                    }
-                ),
-                types.Tool(
-                    name="mem_stats",
-                    description="Get memory statistics and system status. Returns current memory counts and system health.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {}
-                    }
-                )
-            ]
+        """Setup FastMCP tools using decorator-based API."""
 
-        @self.mcp_server.call_tool()
-        async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-            if name == "mem_query":
-                return await self.handle_mem_query(arguments["query"], arguments.get("quadrant_hint"))
-            elif name == "mem_save":
-                return await self.handle_mem_save(arguments)
-            elif name == "fetch_detail":
-                return await self.handle_fetch_detail(arguments["memory_id"])
-            elif name == "submit_feedback":
-                return await self.handle_feedback(arguments)
-            elif name == "fetch_source":
-                return await self.handle_fetch_source(arguments["memory_id"])
-            elif name == "mem_stats":
-                return await self.handle_stats()
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        @self.mcp_server.tool()
+        async def mem_query(
+            query: str,
+            quadrant_hint: Optional[str] = None,
+            context_limit: Optional[int] = None
+        ) -> str:
+            """Retrieve context and memory based on a query."""
+            result = await self.handle_mem_query(query, quadrant_hint, context_limit)
+            return result[0].text if result else "No results"
+
+        @self.mcp_server.tool()
+        async def mem_save(
+            content: str,
+            summary: str,
+            quadrants: Optional[List[str]] = None,
+            metadata: Optional[Dict[str, Any]] = None
+        ) -> str:
+            """Store a new memory (short-term or long-term)."""
+            args = {
+                "content": content,
+                "summary": summary,
+                "quadrants": quadrants or ["general"],
+                "metadata": metadata or {}
+            }
+            result = await self.handle_mem_save(args)
+            return result[0].text if result else "Save failed"
+
+        @self.mcp_server.tool()
+        async def fetch_detail(memory_id: str) -> str:
+            """Fetch L2 full details for a specific memory ID."""
+            result = await self.handle_fetch_detail(memory_id)
+            return result[0].text if result else "Not found"
+
+        @self.mcp_server.tool()
+        async def fetch_source(memory_id: str) -> str:
+            """Retrieve the original source document content (e.g., Obsidian markdown)."""
+            result = await self.handle_fetch_source(memory_id)
+            return result[0].text if result else "Not found"
+
+        @self.mcp_server.tool()
+        async def mem_stats() -> str:
+            """Get memory statistics and system status."""
+            result = await self.handle_stats()
+            return result[0].text if result else "Stats unavailable"
+
+        @self.mcp_server.tool()
+        async def fetch_reflections(
+            pattern_type: str = "all",
+            min_confidence: str = "medium"
+        ) -> str:
+            """Retrieve synthesized reflections and patterns detected across memories."""
+            result = await self.handle_fetch_reflections(pattern_type, min_confidence)
+            return result[0].text if result else "No reflections found"
+
+        @self.mcp_server.tool()
+        async def view_conflicts(status: str = "all") -> str:
+            """View conflicting memories that require resolution."""
+            result = await self.handle_view_conflicts(status)
+            return result[0].text if result else "No conflicts found"
+
+        @self.mcp_server.tool()
+        async def optimization_report(window_days: int = 7) -> str:
+            """View feedback-driven optimization statistics."""
+            result = await self.handle_optimization_report(window_days)
+            return result[0].text if result else "Report unavailable"
+
+        # === Task Management Tools ===
+        @self.mcp_server.tool()
+        async def add_task(
+            title: str,
+            description: str = "",
+            priority: str = "medium",
+            due_date: Optional[str] = None,
+            tags: Optional[List[str]] = None,
+            estimated_minutes: Optional[int] = None,
+            context: str = ""
+        ) -> str:
+            """Add a new task/todo with priority. Use due_date in ISO format (YYYY-MM-DD)."""
+            result = await self.handle_add_task(
+                title, description, priority, due_date, tags, estimated_minutes, context
+            )
+            return result[0].text if result else "Failed to add task"
+
+        @self.mcp_server.tool()
+        async def list_tasks(
+            status: str = "pending",
+            priority: Optional[str] = None,
+            limit: int = 10
+        ) -> str:
+            """List your tasks. Filter by status (pending/in_progress/completed) and priority."""
+            result = await self.handle_list_tasks(status, priority, limit)
+            return result[0].text if result else "Failed to list tasks"
+
+        @self.mcp_server.tool()
+        async def complete_task(task_id: str, notes: str = "") -> str:
+            """Mark a task as completed."""
+            result = await self.handle_complete_task(task_id, notes)
+            return result[0].text if result else "Failed to complete task"
+
+        @self.mcp_server.tool()
+        async def update_task(
+            task_id: str,
+            priority: Optional[str] = None,
+            due_date: Optional[str] = None,
+            status: Optional[str] = None
+        ) -> str:
+            """Update task priority, due date, or status."""
+            result = await self.handle_update_task(task_id, priority, due_date, status)
+            return result[0].text if result else "Failed to update task"
+
+        @self.mcp_server.tool()
+        async def task_stats() -> str:
+            """Get task statistics and overview."""
+            result = await self.handle_task_stats()
+            return result[0].text if result else "Stats unavailable"
+
+        @self.mcp_server.tool()
+        async def export_memories(
+            output_path: str,
+            format: str = "json",
+            filter_quadrants: Optional[List[str]] = None
+        ) -> str:
+            """Export memories to JSON, Markdown, or CSV format."""
+            result = await self.handle_export_memories(output_path, format, filter_quadrants)
+            return result[0].text if result else "Export failed"
+
+        @self.mcp_server.tool()
+        async def import_memories(
+            input_path: str,
+            format: str = "json",
+            skip_existing: bool = True
+        ) -> str:
+            """Import memories from JSON, Obsidian vault, or CSV."""
+            result = await self.handle_import_memories(input_path, format, skip_existing)
+            return result[0].text if result else "Import failed"
+
+        @self.mcp_server.tool()
+        async def search_memories(
+            query: str = "",
+            memory_types: Optional[List[str]] = None,
+            quadrants: Optional[List[str]] = None,
+            min_confidence: Optional[str] = None,
+            min_importance: Optional[float] = None,
+            max_importance: Optional[float] = None,
+            created_after: Optional[str] = None,
+            created_before: Optional[str] = None,
+            include_tags: Optional[List[str]] = None,
+            exclude_tags: Optional[List[str]] = None,
+            content_contains: Optional[str] = None,
+            limit: int = 20,
+            offset: int = 0
+        ) -> str:
+            """Advanced search with filters for memories."""
+            result = await self.handle_search_memories(
+                query, memory_types, quadrants, min_confidence,
+                min_importance, max_importance, created_after, created_before,
+                include_tags, exclude_tags, content_contains, limit, offset
+            )
+            return result[0].text if result else "Search failed"
+
+        @self.mcp_server.tool()
+        async def create_backup(
+            description: str = "",
+            include_vectors: bool = True,
+            include_graph: bool = True,
+            include_queue: bool = True
+        ) -> str:
+            """Create a full backup of all memory data."""
+            result = await self.handle_create_backup(description, include_vectors, include_graph, include_queue)
+            return result[0].text if result else "Backup failed"
+
+        @self.mcp_server.tool()
+        async def restore_backup(backup_id: str, force: bool = False) -> str:
+            """Restore memory data from a backup. Use force=True to overwrite existing data."""
+            result = await self.handle_restore_backup(backup_id, force)
+            return result[0].text if result else "Restore failed"
+
+        @self.mcp_server.tool()
+        async def list_backups() -> str:
+            """List all available backups."""
+            result = await self.handle_list_backups()
+            return result[0].text if result else "Failed to list backups"
+
+        @self.mcp_server.tool()
+        async def delete_backup(backup_id: str) -> str:
+            """Delete a specific backup."""
+            result = await self.handle_delete_backup(backup_id)
+            return result[0].text if result else "Delete failed"
+
+        @self.mcp_server.tool()
+        async def run_maintenance(
+            dry_run: bool = True,
+            stale_days: int = 365,
+            remove_duplicates: bool = True
+        ) -> str:
+            """Run garbage collection to clean up orphaned and stale memories. Set dry_run=False to actually remove."""
+            result = await self.handle_run_maintenance(dry_run, stale_days, remove_duplicates)
+            return result[0].text if result else "Maintenance failed"
+
+        @self.mcp_server.tool()
+        async def storage_stats() -> str:
+            """Get storage statistics and health metrics."""
+            result = await self.handle_storage_stats()
+            return result[0].text if result else "Stats unavailable"
+
+        @self.mcp_server.tool()
+        async def analytics_report() -> str:
+            """Get comprehensive analytics report on memory usage and patterns."""
+            result = await self.handle_analytics_report()
+            return result[0].text if result else "Analytics unavailable"
+
+        @self.mcp_server.tool()
+        async def list_templates() -> str:
+            """List available memory templates for structured capture."""
+            result = await self.handle_list_templates()
+            return result[0].text if result else "Templates unavailable"
+
+        @self.mcp_server.tool()
+        async def save_with_template(
+            template_id: str,
+            content: str,
+            summary: str = "",
+            custom_tags: Optional[List[str]] = None
+        ) -> str:
+            """Save a memory using a structured template."""
+            result = await self.handle_save_with_template(template_id, content, summary, custom_tags)
+            return result[0].text if result else "Save failed"
+
+        @self.mcp_server.tool()
+        async def suggest_template(content: str) -> str:
+            """Get template suggestions based on content."""
+            result = await self.handle_suggest_template(content)
+            return result[0].text if result else "Suggestion failed"
+
+        @self.mcp_server.tool()
+        async def sync_status() -> str:
+            """Check multi-device sync status and configuration."""
+            result = await self.handle_sync_status()
+            return result[0].text if result else "Sync status unavailable"
+
+        @self.mcp_server.tool()
+        async def sync_push(include_vectors: bool = True) -> str:
+            """Push local memories to sync target for multi-device access."""
+            result = await self.handle_sync_push(include_vectors)
+            return result[0].text if result else "Sync push failed"
+
+        @self.mcp_server.tool()
+        async def sync_pull(conflict_resolution: str = "timestamp") -> str:
+            """Pull memories from sync target (use 'local' or 'remote' for conflict resolution)."""
+            result = await self.handle_sync_pull(conflict_resolution)
+            return result[0].text if result else "Sync pull failed"
+
+        @self.mcp_server.tool()
+        async def configure_sync(sync_directory: str) -> str:
+            """Configure sync directory for multi-device synchronization."""
+            result = await self.handle_configure_sync(sync_directory)
+            return result[0].text if result else "Configuration failed"
+
+    async def handle_export_memories(
+        self,
+        output_path: str,
+        format: str,
+        filter_quadrants: Optional[List[str]]
+    ) -> list[types.TextContent]:
+        """Handle memory export request."""
+        try:
+            if format.lower() == "json":
+                result = await self.exporter.export_to_json(
+                    output_path,
+                    filter_quadrants=filter_quadrants
+                )
+                text = f"""✅ Export Complete (JSON)
+
+Records exported: {result['records_exported']}
+Output file: {result['output_path']}
+Embeddings included: {result['include_embeddings']}
+"""
+            elif format.lower() == "markdown":
+                result = await self.exporter.export_to_markdown(
+                    output_path,
+                    filter_quadrants=filter_quadrants
+                )
+                text = f"""✅ Export Complete (Markdown)
+
+Files created: {result['files_created']}
+Output directory: {result['output_directory']}
+Grouped by quadrant: {result['grouped_by_quadrant']}
+"""
+            elif format.lower() == "csv":
+                result = await self.exporter.export_to_csv(
+                    output_path,
+                    filter_quadrants=filter_quadrants
+                )
+                text = f"""✅ Export Complete (CSV)
+
+Records exported: {result['records_exported']}
+Output file: {result['output_path']}
+"""
+            else:
+                return [types.TextContent(type="text", text=f"❌ Unknown format: {format}. Use: json, markdown, csv")]
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Export failed: {e}")]
+
+    async def handle_import_memories(
+        self,
+        input_path: str,
+        format: str,
+        skip_existing: bool
+    ) -> list[types.TextContent]:
+        """Handle memory import request."""
+        try:
+            if format.lower() == "json":
+                result = await self.importer.import_from_json(
+                    input_path,
+                    skip_existing=skip_existing
+                )
+            elif format.lower() == "obsidian":
+                result = await self.importer.import_from_obsidian_vault(input_path)
+            elif format.lower() == "csv":
+                result = await self.importer.import_from_csv(
+                    input_path,
+                    skip_existing=skip_existing
+                )
+            else:
+                return [types.TextContent(type="text", text=f"❌ Unknown format: {format}. Use: json, obsidian, csv")]
+
+            text = f"""✅ Import Complete
+
+Total records: {result.get('total_records', result.get('total_files', 0))}
+Imported: {result['imported']}
+Skipped (existing): {result.get('skipped', 0)}
+Errors: {result['errors']}
+"""
+            if result.get('error_details'):
+                text += "\nErrors (first 10):\n"
+                for err in result['error_details']:
+                    text += f"  - {err}\n"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Import failed: {e}")]
+
+    async def handle_search_memories(
+        self,
+        query: str,
+        memory_types: Optional[List[str]],
+        quadrants: Optional[List[str]],
+        min_confidence: Optional[str],
+        min_importance: Optional[float],
+        max_importance: Optional[float],
+        created_after: Optional[str],
+        created_before: Optional[str],
+        include_tags: Optional[List[str]],
+        exclude_tags: Optional[List[str]],
+        content_contains: Optional[str],
+        limit: int,
+        offset: int
+    ) -> list[types.TextContent]:
+        """Handle advanced memory search with filters."""
+        try:
+            # Build SearchFilters from parameters
+            filters = SearchFilters()
+            if memory_types:
+                filters.memory_types = memory_types
+            if quadrants:
+                filters.quadrants = quadrants
+            if min_confidence:
+                filters.min_confidence = min_confidence
+            if min_importance is not None:
+                filters.min_importance = min_importance
+            if max_importance is not None:
+                filters.max_importance = max_importance
+            if include_tags:
+                filters.include_tags = include_tags
+            if exclude_tags:
+                filters.exclude_tags = exclude_tags
+            if content_contains:
+                filters.content_contains = content_contains
+
+            # Parse date filters
+            if created_after:
+                filters.created_after = self.advanced_search.parse_date_filter(created_after)
+            if created_before:
+                filters.created_before = self.advanced_search.parse_date_filter(created_before)
+
+            # Execute search
+            result = await self.advanced_search.search(
+                query=query,
+                filters=filters,
+                limit=limit,
+                offset=offset
+            )
+
+            # Format results
+            if not result["results"]:
+                return [types.TextContent(type="text", text="🔍 No memories found matching your criteria.")]
+
+            text = f"""🔍 Search Results ({result['returned']} of {result['total']})
+
+Filters Applied: {result['filters_applied']}
+---
+"""
+            for i, mem in enumerate(result["results"], 1):
+                text += f"\n{i}. [{mem['type'].upper()}] {mem['summary'][:80]}"
+                if len(mem['summary']) > 80:
+                    text += "..."
+                text += f"\n   ID: {mem['id']}"
+                text += f" | Quadrants: {', '.join(mem['quadrants'])}"
+                text += f" | Confidence: {mem['confidence']}"
+                text += f" | Importance: {mem['importance']:.2f}"
+                if mem.get('tags'):
+                    text += f"\n   Tags: {', '.join(mem['tags'][:5])}"
+                if mem.get('content_preview'):
+                    preview = mem['content_preview'][:120].replace(chr(10), ' ')
+                    text += f"\n   Preview: {preview}..."
+                text += "\n"
+
+            if result['total'] > result['returned']:
+                text += f"\n📄 Page {offset // limit + 1} | Use offset={offset + limit} for next page"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Search failed: {e}")]
+
+    async def handle_create_backup(
+        self,
+        description: str,
+        include_vectors: bool,
+        include_graph: bool,
+        include_queue: bool
+    ) -> list[types.TextContent]:
+        """Handle backup creation request."""
+        try:
+            result = await self.backup_manager.create_backup(
+                description=description,
+                include_vectors=include_vectors,
+                include_graph=include_graph,
+                include_queue=include_queue
+            )
+
+            size_mb = result['size_bytes'] / (1024 * 1024)
+
+            text = f"""✅ Backup Created Successfully
+
+Backup ID: {result['backup_id']}
+Size: {size_mb:.2f} MB
+Includes:
+  - Vectors: {'✓' if result['includes_vectors'] else '✗'}
+  - Graph: {'✓' if result['includes_graph'] else '✗'}
+  - Queue: {'✓' if result['includes_queue'] else '✗'}
+
+Location: {result['backup_path']}
+"""
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Backup failed: {e}")]
+
+    async def handle_restore_backup(
+        self,
+        backup_id: str,
+        force: bool
+    ) -> list[types.TextContent]:
+        """Handle backup restore request."""
+        try:
+            result = await self.backup_manager.restore_backup(backup_id, force)
+
+            if not result['success']:
+                if result.get('requires_force'):
+                    return [types.TextContent(
+                        type="text",
+                        text=f"⚠️ Existing data detected. Use force=True to overwrite.\nError: {result['error']}"
+                    )]
+                return [types.TextContent(type="text", text=f"❌ Restore failed: {result['error']}")]
+
+            text = f"""✅ Backup Restored Successfully
+
+Backup ID: {result['backup_id']}
+Restored components:
+"""
+            for component in result['restored']:
+                text += f"  ✓ {component}\n"
+
+            if result['errors']:
+                text += "\n⚠️ Errors:\n"
+                for error in result['errors']:
+                    text += f"  - {error}\n"
+
+            text += f"\n📝 Description: {result['manifest'].get('description', 'N/A')}"
+            text += f"\n📅 Created: {result['manifest'].get('created_at', 'N/A')}"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Restore failed: {e}")]
+
+    async def handle_list_backups(self) -> list[types.TextContent]:
+        """Handle backup list request."""
+        try:
+            backups = await self.backup_manager.list_backups()
+            stats = self.backup_manager.get_backup_stats()
+
+            if not backups:
+                return [types.TextContent(
+                    type="text",
+                    text=f"📦 No backups found.\n\nBackup directory: {stats['backup_directory']}"
+                )]
+
+            text = f"""📦 Available Backups ({stats['backup_count']} total, {stats['total_size_mb']:.2f} MB)
+
+"""
+            for backup in backups:
+                size_mb = backup.size_bytes / (1024 * 1024)
+                text += f"""ID: {backup.id}
+  Description: {backup.description}
+  Created: {backup.created_at.strftime('%Y-%m-%d %H:%M:%S')}
+  Size: {size_mb:.2f} MB
+  Includes: {'V' if backup.includes_vectors else ''}{'G' if backup.includes_graph else ''}{'Q' if backup.includes_queue else ''}
+---
+"""
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Failed to list backups: {e}")]
+
+    async def handle_delete_backup(self, backup_id: str) -> list[types.TextContent]:
+        """Handle backup deletion request."""
+        try:
+            result = await self.backup_manager.delete_backup(backup_id)
+
+            if result['success']:
+                freed_mb = result['freed_bytes'] / (1024 * 1024)
+                return [types.TextContent(
+                    type="text",
+                    text=f"✅ Backup {result['backup_id']} deleted. Freed {freed_mb:.2f} MB."
+                )]
+            else:
+                return [types.TextContent(type="text", text=f"❌ Delete failed: {result['error']}")]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Delete failed: {e}")]
+
+    async def handle_run_maintenance(
+        self,
+        dry_run: bool,
+        stale_days: int,
+        remove_duplicates: bool
+    ) -> list[types.TextContent]:
+        """Handle maintenance/garbage collection request."""
+        try:
+            result = await self.garbage_collector.run_full_cleanup(
+                dry_run=dry_run,
+                stale_days=stale_days,
+                remove_duplicates=remove_duplicates
+            )
+
+            mode_text = "DRY RUN (no changes made)" if dry_run else "LIVE RUN"
+            text = f"""🔧 Maintenance Report - {mode_text}
+
+📊 Summary:
+  Total items that would be removed: {result['summary']['total_items_removed']}
+  Space that would be reclaimed: {result['summary']['total_space_reclaimed_mb']:.2f} MB
+  Operations run: {result['summary']['operations_run']}
+
+📋 Details:
+"""
+            for op in result['operations']:
+                text += f"""
+{op['cleanup_type'].upper()}:
+  Items found: {op['items_found']}
+  Items removed: {op['items_removed']}
+  Space reclaimed: {op['space_reclaimed_mb']:.2f} MB
+  Errors: {len(op['errors'])}
+"""
+
+            if dry_run:
+                text += "\n⚠️ This was a dry run. No changes were made.\n"
+                text += "Set dry_run=False to actually perform cleanup.\n"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Maintenance failed: {e}")]
+
+    async def handle_storage_stats(self) -> list[types.TextContent]:
+        """Handle storage statistics request."""
+        try:
+            stats = await self.garbage_collector.get_storage_stats()
+
+            if 'error' in stats:
+                return [types.TextContent(type="text", text=f"❌ Failed to get stats: {stats['error']}")]
+
+            text = f"""📊 Storage Statistics
+
+Vector Memories: {stats['vector_memories']:,}
+Graph Nodes: {stats['graph_nodes']:,}
+Graph Edges: {stats['graph_edges']:,}
+
+Last Updated: {stats['timestamp']}
+
+💡 Tip: Run `run_maintenance` to clean up orphaned records and duplicates.
+"""
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Stats failed: {e}")]
+
+    async def handle_analytics_report(self) -> list[types.TextContent]:
+        """Handle analytics report request."""
+        try:
+            report = await self.analytics.generate_full_report()
+
+            overview = report['overview']
+            health = report['health']
+            quadrants = report['quadrants']
+            types_dist = report['types']
+
+            text = f"""📊 Memory Analytics Report
+
+╔══════════════════════════════════════════════════════════════╗
+║ OVERVIEW                                                     ║
+╠══════════════════════════════════════════════════════════════╣
+  Total Memories: {overview.get('total_memories', 0):,}
+  Average Importance: {overview.get('average_importance', 0):.3f}
+  High Importance: {overview.get('high_importance_count', 0)}
+  Unique Tags: {overview.get('unique_tags', 0)}
+  Date Span: {overview.get('date_range', {}).get('span_days', 0)} days
+╚══════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════╗
+║ HEALTH SCORE: {health.get('overall', 0):.2f} ({health.get('status', 'unknown').upper()}){' ' * (35 - len(health.get('status', 'unknown')))}║
+╠══════════════════════════════════════════════════════════════╣
+  Quadrant Coverage: {health.get('factors', {}).get('quadrant_coverage', 0):.2f}
+  Quality Ratio: {health.get('factors', {}).get('quality_ratio', 0):.2f}
+  Recent Activity: {health.get('factors', {}).get('recent_activity', 0):.2f}
+  Connectivity: {health.get('factors', {}).get('connectivity', 0):.2f}
+╚══════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════╗
+║ QUADRANTS                                                    ║
+╠══════════════════════════════════════════════════════════════╣
+"""
+            for quad, stats in quadrants.items():
+                text += f"  {quad:15} | {stats.count:5} | avg imp: {stats.avg_importance:.2f}\n"
+
+            text += """╚══════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════╗
+║ MEMORY TYPES                                                 ║
+╠══════════════════════════════════════════════════════════════╣
+"""
+            for mem_type, count in sorted(types_dist.items(), key=lambda x: -x[1]):
+                text += f"  {mem_type:20} : {count:,}\n"
+
+            text += """╚══════════════════════════════════════════════════════════════╝
+
+Top Tags:"""
+
+            for tag_info in report['tags'].get('top_tags', [])[:10]:
+                text += f"\n  #{tag_info['tag']} ({tag_info['count']})"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Analytics failed: {e}")]
+
+    async def handle_list_templates(self) -> list[types.TextContent]:
+        """Handle template list request."""
+        try:
+            templates = self.template_manager.list_templates()
+
+            text = """📝 Available Memory Templates
+
+"""
+            for t in templates:
+                text += f"""{t['name']} (ID: {t['id']})
+  Description: {t['description']}
+  Quadrants: {', '.join(t['default_quadrants'])}
+  Tags: {', '.join(t['default_tags'])}
+  Suggested Importance: {t['suggested_importance']}
+---
+"""
+
+            text += """
+💡 Usage:
+  save_with_template(template_id="meeting_notes", content="...")
+
+Or get suggestions:
+  suggest_template(content="Your raw text here")
+"""
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Templates failed: {e}")]
+
+    async def handle_save_with_template(
+        self,
+        template_id: str,
+        content: str,
+        summary: str,
+        custom_tags: Optional[List[str]]
+    ) -> list[types.TextContent]:
+        """Handle save with template request."""
+        try:
+            # Apply template
+            result = self.template_manager.apply_template(template_id, content)
+
+            if "error" in result:
+                return [types.TextContent(type="text", text=f"❌ Template error: {result['error']}")]
+
+            template = self.template_manager.get_template(template_id)
+
+            # Build metadata
+            tags = list(template.default_tags)
+            if custom_tags:
+                tags.extend(custom_tags)
+            tags = list(set(tags))
+
+            # Save memory
+            memory_id = str(uuid.uuid4())
+            await self._save_memory(
+                memory_id=memory_id,
+                summary=summary or f"{template.name} - {datetime.now().strftime('%Y-%m-%d')}",
+                content=content,
+                quadrants=template.default_quadrants,
+                tags=tags,
+                importance=template.suggested_importance
+            )
+
+            text = f"""✅ Memory Saved with Template
+
+Template: {template.name}
+Memory ID: {memory_id}
+Quadrants: {', '.join(template.default_quadrants)}
+Tags: {', '.join(tags)}
+Importance: {template.suggested_importance}
+"""
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Save failed: {e}")]
+
+    async def handle_suggest_template(self, content: str) -> list[types.TextContent]:
+        """Handle template suggestion request."""
+        try:
+            suggestions = self.template_manager.suggest_template(content)
+
+            if not suggestions:
+                return [types.TextContent(
+                    type="text",
+                    text="🤔 No strong template matches. Use list_templates to see all options."
+                )]
+
+            text = """💡 Suggested Templates
+
+"""
+            for s in suggestions:
+                text += f"""{s['name']} (ID: {s['template_id']})
+  Match Score: {s['match_score']}
+  Description: {s['description']}
+---
+"""
+
+            text += f"\nTop match: Use template_id='{suggestions[0]['template_id']}'"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Suggestion failed: {e}")]
+
+    async def handle_sync_status(self) -> list[types.TextContent]:
+        """Handle sync status request."""
+        try:
+            status = await self.sync_manager.sync_status()
+
+            text = f"""🔄 Multi-Device Sync Status
+
+Device ID: {status['device_id']}
+Sync Enabled: {'✓' if status['sync_enabled'] else '✗'}
+Last Sync: {status['last_sync'] or 'Never'}
+
+Configuration:
+  Sync Directory: {status['sync_directory'] or 'Not configured'}
+  Local Bundles: {status['bundles_available']}
+
+💡 Usage:
+  configure_sync(sync_directory="/path/to/sync")
+  sync_push()          # Upload to sync target
+  sync_pull()          # Download from sync target
+"""
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Sync status failed: {e}")]
+
+    async def handle_sync_push(self, include_vectors: bool) -> list[types.TextContent]:
+        """Handle sync push request."""
+        try:
+            result = await self.sync_manager.sync_push(
+                self.vector_store,
+                self.graph_store,
+                include_vectors=include_vectors
+            )
+
+            text = f"""🔄 Sync Push {'✅' if result.status.value == 'success' else '❌'}
+
+Status: {result.status.value}
+Message: {result.message}
+Records Uploaded: {result.records_uploaded}
+"""
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Sync push failed: {e}")]
+
+    async def handle_sync_pull(self, conflict_resolution: str) -> list[types.TextContent]:
+        """Handle sync pull request."""
+        try:
+            result = await self.sync_manager.sync_pull(
+                self.vector_store,
+                self.graph_store,
+                conflict_resolution=conflict_resolution
+            )
+
+            text = f"""🔄 Sync Pull {'✅' if result.status.value == 'success' else '⚠️'}
+
+Status: {result.status.value}
+Message: {result.message}
+Records Downloaded: {result.records_downloaded}
+Conflicts: {len(result.conflicts)}
+"""
+            if result.conflicts:
+                text += "\n⚠️ Conflicts detected:\n"
+                for c in result.conflicts[:5]:
+                    text += f"  - {c}\n"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Sync pull failed: {e}")]
+
+    async def handle_configure_sync(self, sync_directory: str) -> list[types.TextContent]:
+        """Handle sync configuration request."""
+        try:
+            result = await self.sync_manager.setup_remote(sync_directory)
+
+            if result['success']:
+                text = f"""✅ Sync Configured
+
+Sync Directory: {result['remote_url']}
+Device ID: {result['device_id']}
+
+{result['message']}
+"""
+                return [types.TextContent(type="text", text=text)]
+            else:
+                return [types.TextContent(type="text", text=f"❌ Configuration failed: {result.get('error', 'Unknown')}")]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Configuration failed: {e}")]
 
     async def handle_fetch_source(self, memory_id: str) -> list[types.TextContent]:
         memory_data = self.vector_store.get_memory_by_id(memory_id)
@@ -321,7 +1177,8 @@ class MemCoreAgent:
         
         return [types.TextContent(type="text", text=f"Source URI {source_uri} not supported or not found.")]
 
-    async def handle_mem_query(self, query: str, quadrant_hint: Optional[str] = None) -> list[types.TextContent]:
+    async def handle_mem_query(self, query: str, quadrant_hint: Optional[str] = None,
+                                context_limit: Optional[int] = None) -> list[types.TextContent]:
         # 1. Routing (using FAST model via router)
         if not quadrant_hint:
             classification = await self.router.classify_request(query)
@@ -329,44 +1186,39 @@ class MemCoreAgent:
         else:
             quadrant = quadrant_hint
 
-        # 2. Vector Search (L0) - Include both target quadrant and instructions
+        # 2. Progressive Tiered Retrieval with token budgeting
         query_vector = await self.llm.get_embedding(query)
         search_quadrants = [quadrant]
         if quadrant != "ai_instructions":
             search_quadrants.append("ai_instructions")
-            
-        l0_results = await self.tiered_manager.get_l0_context(query_vector, quadrants=search_quadrants)
 
-        # 3. Create request node early (for dynamic scoring context)
+        # Create request node early (for dynamic scoring context)
         request_id = str(uuid.uuid4())
 
-        # 4. Scoring with dynamic relevancy (uses graph weights from previous feedback)
-        scored_memories = self.tiered_manager.score_memories(l0_results, request_id=request_id)
+        # Use progressive disclosure: L0 -> L1 with token budget
+        context_result = await self.tiered_manager.get_progressive_context(
+            query_vector,
+            quadrants=search_quadrants,
+            max_tokens=context_limit,
+            request_id=request_id
+        )
 
-        # 5. Formatted Response (Separating Instructions and Knowledge)
-        instructions = [m for m in scored_memories if "ai_instructions" in m["quadrants"]]
-        knowledge = [m for m in scored_memories if "ai_instructions" not in m["quadrants"]]
+        # 3. Update recency for included memories
+        for item in context_result["l0_items"]:
+            self.vector_store.update_memory_access(item["id"])
 
+        # 4. Graph Mapping (Record the request and link to memories that fulfilled it)
+        self.graph_store.add_request_node(request_id, query, context_result["context_string"])
+        for mem_id in context_result["l2_candidates"][:3]:
+            self.graph_store.link_request_to_memory(request_id, mem_id)
+
+        # 5. Build response with progressive context
         response_text = f"Quadrant: {quadrant}\n\n"
+        response_text += context_result["context_string"]
 
-        if instructions:
-            response_text += "--- Relevant Instructions (SOPs) ---\n"
-            for m in instructions[:3]:
-                boost_info = f" [boost: {m.get('dynamic_boost', 1.0):.2f}]" if m.get('dynamic_boost', 1.0) != 1.0 else ""
-                response_text += f"- [{m['id']}] {m['summary']} (Score: {m['final_score']:.2f}){boost_info}\n"
-                self.vector_store.update_memory_access(m['id']) # Update recency
-            response_text += "\n"
-
-        response_text += "--- Knowledge & Context ---\n"
-        for i, mem in enumerate(knowledge[:5]):
-            boost_info = f" [boost: {mem.get('dynamic_boost', 1.0):.2f}]" if mem.get('dynamic_boost', 1.0) != 1.0 else ""
-            response_text += f"{i+1}. [{mem['id']}] {mem['summary']} (Score: {mem['final_score']:.2f}){boost_info}\n"
-            self.vector_store.update_memory_access(mem['id']) # Update recency
-
-        # 6. Graph Mapping (Record the request and link to memories that fulfilled it)
-        self.graph_store.add_request_node(request_id, query, response_text)
-        for mem in scored_memories[:3]:
-            self.graph_store.link_request_to_memory(request_id, mem["id"])
+        # Add hint about L2 availability
+        if context_result["l2_candidates"]:
+            response_text += f"\n💡 Use fetch_detail with IDs: {', '.join(context_result['l2_candidates'][:3])} for full content\n"
 
         return [types.TextContent(type="text", text=response_text)]
 
@@ -397,43 +1249,6 @@ class MemCoreAgent:
         )
         
         return [types.TextContent(type="text", text=f"Memory stored successfully. ID: {memory_id}")]
-
-    async def handle_feedback(self, args: dict) -> list[types.TextContent]:
-        request_id = args["request_id"]
-        memory_id = args["memory_id"]
-        rating = args["rating"]
-        reason = args.get("reason", "No reason provided")
-
-        # Update graph weight
-        self.graph_store.update_edge_weight(request_id, memory_id, "FULFILLED_BY", float(rating))
-
-        # If negative rating, perform Root Cause Analysis (using STRONG model)
-        if rating < 0:
-            memory_data = self.vector_store.get_memory_by_id(memory_id)
-            request_data = self.graph_store.get_node_metadata(request_id)
-            
-            prompt = f"""
-            Perform Root Cause Analysis on a memory retrieval failure.
-            
-            User Query: {request_data.get('query') if request_data else 'Unknown'}
-            Retrieved Memory: {memory_data[0].payload['summary'] if memory_data else 'Unknown'}
-            User Feedback: {reason}
-            
-            Identify if the issue is:
-            - IRRELEVANCE: Semantic search returned unrelated info.
-            - OBSOLESCENCE: Info is outdated.
-            - NOISE: Too much detail, not enough gist.
-            
-            Suggest an adjustment to the Importance or Relevance weights.
-            """
-            
-            rca_response = await self.llm.completion(
-                messages=[{"role": "user", "content": prompt}],
-                tier="strong"
-            )
-            return [types.TextContent(type="text", text=f"Feedback recorded. RCA Result: {rca_response}")]
-
-        return [types.TextContent(type="text", text="Feedback recorded. Edge weights updated.")]
 
     async def handle_stats(self) -> list[types.TextContent]:
         """Return memory statistics."""
@@ -485,95 +1300,433 @@ System:
 """
         return [types.TextContent(type="text", text=response_text)]
 
+    async def handle_fetch_reflections(
+        self,
+        pattern_type: str = "all",
+        min_confidence: str = "medium"
+    ) -> list[types.TextContent]:
+        """Retrieve synthesized reflections about user patterns."""
+        # Search for reflections in vector store
+        query_vector = await self.llm.get_embedding("user patterns preferences behavior")
+
+        # Search in general quadrant (reflections are stored there)
+        results = self.vector_store.search_memories(
+            query_vector,
+            limit=20,
+            filter_quadrants=["general"]
+        )
+
+        # Filter for reflections only
+        reflections = []
+        for res in results:
+            payload = res.payload
+            if payload.get("type") != "reflection":
+                continue
+
+            # Filter by confidence
+            confidence = payload.get("confidence", "medium")
+            confidence_levels = {"high": 3, "medium": 2, "low": 1}
+            if confidence_levels.get(confidence, 0) < confidence_levels.get(min_confidence, 2):
+                continue
+
+            # Filter by pattern type
+            res_pattern_type = payload.get("pattern_type", "preference")
+            if pattern_type != "all" and res_pattern_type != pattern_type:
+                continue
+
+            reflections.append({
+                "id": res.id,
+                "summary": payload.get("summary", "Untitled"),
+                "reflection": payload.get("content", ""),
+                "confidence": confidence,
+                "pattern_type": res_pattern_type,
+                "memory_count": payload.get("memory_count", 0),
+                "supporting_evidence": payload.get("supporting_evidence", "")
+            })
+
+        if not reflections:
+            return [types.TextContent(type="text", text="No reflections found. Memories need to be consolidated to generate reflections.")]
+
+        # Format response
+        response_text = f"=== Synthesized Reflections ({len(reflections)} found) ===\n\n"
+
+        for r in reflections:
+            response_text += f"📊 {r['summary']}\n"
+            response_text += f"   Confidence: {r['confidence']} | Type: {r['pattern_type']}\n"
+            response_text += f"   Based on: {r['memory_count']} memories\n"
+            response_text += f"   Insight: {r['reflection']}\n"
+            if r['supporting_evidence']:
+                response_text += f"   Evidence: {r['supporting_evidence'][:100]}...\n"
+            response_text += f"   ID: {r['id']}\n\n"
+
+        response_text += "Use fetch_detail with a reflection ID to see full details.\n"
+
+        return [types.TextContent(type="text", text=response_text)]
+
+    async def handle_view_conflicts(self, status: str = "all") -> list[types.TextContent]:
+        """View conflicting memories that require resolution."""
+        # Search for memories with conflict markers
+        query_vector = await self.llm.get_embedding("conflict contradiction override")
+
+        results = self.vector_store.search_memories(
+            query_vector,
+            limit=50,
+            filter_quadrants=None  # Search all quadrants
+        )
+
+        conflicts = []
+        needs_review = []
+
+        for res in results:
+            payload = res.payload
+
+            # Check for needs_review flag (deferred conflicts)
+            if payload.get("needs_review"):
+                needs_review.append({
+                    "id": res.id,
+                    "summary": payload.get("summary", "Untitled"),
+                    "content": payload.get("content", ""),
+                    "reason": payload.get("conflict_reason", "Unknown")
+                })
+
+            # Check for conflict edges in graph
+            related = self.graph_store.get_related_nodes(res.id, "CONFLICTS_WITH")
+            if related:
+                conflict_entries = []
+                for rel in related:
+                    rel_metadata = rel.get("metadata", {})
+                    conflict_entries.append({
+                        "with": rel.get("target"),
+                        "resolution": rel_metadata.get("resolution", "unknown"),
+                        "reason": rel_metadata.get("reason", ""),
+                        "winner": rel_metadata.get("winner")
+                    })
+
+                conflicts.append({
+                    "id": res.id,
+                    "summary": payload.get("summary", "Untitled"),
+                    "content": payload.get("content", ""),
+                    "type": payload.get("type", "general"),
+                    "conflicts_with": conflict_entries
+                })
+
+        # Filter based on status
+        if status == "unresolved":
+            conflicts = [c for c in conflicts if any(
+                cw.get("resolution") == "keep_both_marked" or cw.get("winner") is None
+                for cw in c["conflicts_with"]
+            )]
+        elif status == "resolved":
+            conflicts = [c for c in conflicts if any(
+                cw.get("winner") is not None
+                for cw in c["conflicts_with"]
+            )]
+        elif status == "deferred":
+            return self._format_conflict_response([], needs_review)
+
+        return self._format_conflict_response(conflicts, needs_review)
+
+    def _format_conflict_response(
+        self,
+        conflicts: List[Dict],
+        needs_review: List[Dict]
+    ) -> list[types.TextContent]:
+        """Format conflict data for display."""
+        response_text = "=== Memory Conflicts Report ===\n\n"
+
+        if needs_review:
+            response_text += f"⚠️  Needs Manual Review ({len(needs_review)} items):\n"
+            response_text += "-" * 40 + "\n"
+            for item in needs_review:
+                response_text += f"  ID: {item['id']}\n"
+                response_text += f"  Summary: {item['summary']}\n"
+                response_text += f"  Reason: {item['reason']}\n\n"
+
+        if conflicts:
+            response_text += f"🔗 Active Conflicts ({len(conflicts)} memories involved):\n"
+            response_text += "-" * 40 + "\n"
+            for conflict in conflicts:
+                response_text += f"\n  📌 {conflict['summary']}\n"
+                response_text += f"     ID: {conflict['id']}\n"
+                response_text += f"     Type: {conflict['type']}\n"
+
+                for cw in conflict["conflicts_with"]:
+                    winner_marker = " 👑" if cw.get("winner") == conflict["id"] else ""
+                    response_text += f"     ⚔️  vs {cw['with'][:8]}... "
+                    response_text += f"[{cw['resolution']}]{winner_marker}\n"
+                    if cw.get("reason"):
+                        response_text += f"        Reason: {cw['reason'][:60]}...\n"
+        else:
+            response_text += "\n✅ No conflicts found.\n"
+
+        response_text += "\n"
+        response_text += "Legend:\n"
+        response_text += "  👑 = Winner of the conflict\n"
+        response_text += "  keep_existing = Existing memory prioritized\n"
+        response_text += "  replace_with_new = New memory took precedence\n"
+        response_text += "  keep_both_marked = Both retained (unresolved)\n"
+        response_text += "  defer = Requires manual review\n"
+
+        return [types.TextContent(type="text", text=response_text)]
+
+    async def handle_optimization_report(self, window_days: int = 7) -> list[types.TextContent]:
+        """Retrieve feedback-driven optimization statistics."""
+        report = self.feedback_optimizer.get_optimization_report(window_days)
+
+        response_text = f"""=== Feedback Optimization Report ({window_days} days) ===
+
+📊 Feedback Statistics:
+  Total Feedback: {report['total_feedback']}
+  Positive Ratio: {report['positive_ratio']:.1%} if report['positive_ratio'] else 'N/A'
+  Negative Count: {report['negative_count']}
+
+🔧 Current Weights:
+  Relevance (W_rel):   {report['current_weights']['W_rel']:.3f}
+  Recency   (W_rec):   {report['current_weights']['W_rec']:.3f}
+  Importance (W_imp):  {report['current_weights']['W_imp']:.3f}
+
+📈 Common Failures:
+  Most Common: {report['most_common_failure'] or 'None recorded'}
+
+  Breakdown:
+"""
+        if report.get('failure_breakdown'):
+            for failure_type, count in sorted(report['failure_breakdown'].items(), key=lambda x: x[1], reverse=True):
+                response_text += f"    - {failure_type}: {count}\n"
+        else:
+            response_text += "    No failures recorded\n"
+
+        response_text += f"""
+⚙️  Auto-Adjustments:
+  Weight adjustments made: {report['adjustments_made']}
+
+Notes:
+- Weights auto-adjust based on negative feedback with high/medium confidence
+- Default weights: W_rel=0.5, W_rec=0.3, W_imp=0.2 (sum to 1.0)
+- Maximum deviation from defaults: ±0.2
+"""
+        return [types.TextContent(type="text", text=response_text)]
+
+    # === Task Management Handlers ===
+
+    async def handle_add_task(
+        self,
+        title: str,
+        description: str,
+        priority: str,
+        due_date: Optional[str],
+        tags: Optional[List[str]],
+        estimated_minutes: Optional[int],
+        context: str
+    ) -> list[types.TextContent]:
+        """Handle adding a new task."""
+        try:
+            result = await self.task_manager.add_task(
+                title=title,
+                description=description,
+                priority=priority,
+                due_date=due_date,
+                tags=tags,
+                estimated_minutes=estimated_minutes,
+                context=context
+            )
+
+            if result["success"]:
+                task = result["task"]
+                text = f"""✅ Task Added
+
+ID: {task['id']}
+Title: {task['title']}
+Priority: {task['priority'].upper()}
+Status: {task['status']}
+"""
+                if task.get('due_date'):
+                    text += f"Due: {task['due_date']}\n"
+
+                text += f"\nI'll remind you about this based on priority."
+
+                return [types.TextContent(type="text", text=text)]
+            else:
+                return [types.TextContent(type="text", text=f"❌ Failed: {result.get('error', 'Unknown')}")]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Error: {e}")]
+
+    async def handle_list_tasks(
+        self,
+        status: str,
+        priority: Optional[str],
+        limit: int
+    ) -> list[types.TextContent]:
+        """Handle listing tasks."""
+        try:
+            tasks = self.task_manager.list_tasks(
+                status=status if status != "all" else None,
+                priority=priority,
+                limit=limit
+            )
+
+            if not tasks:
+                return [types.TextContent(type="text", text="📋 No tasks found. Use add_task to create one!")]
+
+            # Calculate urgency scores
+            now = datetime.now()
+            scored_tasks = []
+            for task in tasks:
+                score = self.task_manager._calculate_urgency_score(task, now)
+                scored_tasks.append((task, score))
+
+            # Sort by score
+            scored_tasks.sort(key=lambda x: x[1], reverse=True)
+
+            text = f"📋 Your Tasks ({len(tasks)} total)\n\n"
+
+            for i, (task, score) in enumerate(scored_tasks, 1):
+                urgency = "🔴" if score > 0.9 else "🟠" if score > 0.75 else "🟡" if score > 0.5 else "⚪"
+                text += f"{urgency} {i}. {task.title}\n"
+                text += f"   ID: {task.id[:8]}... | Priority: {task.priority.upper()} | Status: {task.status}\n"
+
+                if task.due_date:
+                    due = datetime.fromisoformat(task.due_date.replace('Z', '+00:00'))
+                    days_until = (due - now).days
+                    if days_until < 0:
+                        text += f"   ⚠️ OVERDUE by {abs(days_until)} days\n"
+                    elif days_until == 0:
+                        text += f"   ⏰ Due today\n"
+                    else:
+                        text += f"   📅 Due in {days_until} days\n"
+
+                text += "\n"
+
+            text += "💡 Use complete_task(task_id) to mark done\n"
+            text += "💡 Use update_task(task_id, priority='high') to reprioritize"
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Error: {e}")]
+
+    async def handle_complete_task(
+        self,
+        task_id: str,
+        notes: str
+    ) -> list[types.TextContent]:
+        """Handle completing a task."""
+        try:
+            result = await self.task_manager.complete_task(task_id, notes)
+
+            if result["success"]:
+                return [types.TextContent(
+                    type="text",
+                    text=f"✅ Task completed!\n\n{result['task']['title']}\n\nGreat job! 🎉"
+                )]
+            else:
+                return [types.TextContent(type="text", text=f"❌ {result.get('error', 'Failed')}")]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Error: {e}")]
+
+    async def handle_update_task(
+        self,
+        task_id: str,
+        priority: Optional[str],
+        due_date: Optional[str],
+        status: Optional[str]
+    ) -> list[types.TextContent]:
+        """Handle updating a task."""
+        try:
+            result = await self.task_manager.update_task(
+                task_id=task_id,
+                priority=priority,
+                due_date=due_date,
+                status=status
+            )
+
+            if result["success"]:
+                return [types.TextContent(
+                    type="text",
+                    text=f"✅ Task updated!\n\n{result['task']['title']}\nPriority: {result['task']['priority']}\nStatus: {result['task']['status']}"
+                )]
+            else:
+                return [types.TextContent(type="text", text=f"❌ {result.get('error', 'Failed')}")]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Error: {e}")]
+
+    async def handle_task_stats(self) -> list[types.TextContent]:
+        """Handle task statistics."""
+        try:
+            stats = self.task_manager.get_stats()
+
+            text = f"""📊 Task Statistics
+
+Total Tasks: {stats['total']}
+Pending: {stats.get('pending', 0)}
+Overdue: {stats.get('overdue', 0)} ⚠️
+
+By Priority:
+"""
+            for priority, count in sorted(stats['by_priority'].items(), key=lambda x: -self.task_manager.PRIORITY_WEIGHTS.get(x[0], 0)):
+                text += f"  {priority.upper()}: {count}\n"
+
+            if stats.get('overdue', 0) > 0:
+                text += "\n🔔 You have overdue tasks! Use list_tasks() to see them."
+
+            return [types.TextContent(type="text", text=text)]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"❌ Error: {e}")]
+
     async def run_stdio(self):
         """Run in stdio mode (for client-spawned processes)."""
-        async with stdio_server() as (read_stream, write_stream):
-            await self.mcp_server.run(
-                read_stream,
-                write_stream,
-                self.mcp_server.create_initialization_options()
-            )
-    
-    async def run_sse(self, host: str = "127.0.0.1", port: int = 8080):
-        """Run in SSE mode (standalone service)."""
-        if not STARLETTE_AVAILABLE:
-            print("Error: SSE mode requires starlette. Install with: uv add starlette uvicorn")
-            return
-        
-        from uvicorn import Config, Server as UvicornServer
-        
-        sse_transport = SseServerTransport("/messages")
-        
-        async def handle_sse(request):
-            """Handle SSE connections."""
-            async with sse_transport.connect_sse(
-                request.scope, request.receive, request._send
-            ) as (read_stream, write_stream):
-                await self.mcp_server.run(
-                    read_stream,
-                    write_stream,
-                    self.mcp_server.create_initialization_options()
-                )
-        
-        async def handle_messages(request):
-            """Handle POST messages from client."""
-            await sse_transport.handle_post_message(
-                request.scope, request.receive, request._send
-            )
-            return PlainTextResponse("OK")
-        
-        async def handle_report(request):
-            """Serve the HTML status report."""
-            report_path = os.path.join(DATA_DIR, "reports", "latest.html")
-            if os.path.exists(report_path):
-                with open(report_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                from starlette.responses import HTMLResponse
-                return HTMLResponse(content)
-            else:
-                return PlainTextResponse("Report not generated yet. Please wait for the hourly update.", status_code=503)
-        
-        routes = [
-            Route("/sse", endpoint=handle_sse),
-            Route("/messages", endpoint=handle_messages, methods=["POST"]),
-            Route("/health", endpoint=lambda _: PlainTextResponse("OK"), methods=["GET"]),
-            Route("/status", endpoint=handle_report, methods=["GET"]),
-        ]
-        
-        app = Starlette(routes=routes)
-        config = Config(app, host=host, port=port, log_level="info")
-        server = UvicornServer(config)
-        
-        print(f"MemCore SSE server running on http://{host}:{port}")
-        print(f"  - SSE endpoint: http://{host}:{port}/sse")
-        print(f"  - Message endpoint: http://{host}:{port}/messages")
+        # FastMCP's run() is synchronous, so we run it in a thread
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self.mcp_server.run(transport="stdio")
+        )
+
+    async def run_http(self, host: str = "127.0.0.1", port: int = 8080):
+        """Run in HTTP mode (standalone service with streamable-http transport)."""
+        print(f"MemCore HTTP server starting on http://{host}:{port}")
+        print(f"  - MCP endpoint: http://{host}:{port}/mcp")
         print(f"  - Health check: http://{host}:{port}/health")
         print(f"  - Status report: http://{host}:{port}/status")
-        
-        await server.serve()
+
+        # FastMCP's run() with streamable-http transport
+        # Note: This starts its own uvicorn server
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self.mcp_server.run(transport="streamable-http", port=port)
+        )
     
-    async def run(self, mode: str = "stdio", host: str = "127.0.0.1", port: int = 8080):
+    async def run(
+        self,
+        mode: str = "stdio",
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        dashboard_port: Optional[int] = None
+    ):
         # 1. Crash recovery: Reset any 'processing' jobs back to 'pending'
         recovered = self.consolidator.recover_from_crash()
         if recovered > 0:
             print(f"[Recovery] Reset {recovered} jobs from 'processing' to 'pending' (crash recovery)")
-        
+
         # 2. Start scheduler
         self.scheduler.start()
-        
+
         # 3. Generate initial status report
         asyncio.create_task(self.generate_status_report())
-        
+
         # 4. Start watcher
         if self.watcher:
             self.watcher.start()
-        
+
         # 5. Process any pending queue items immediately
         pending = self.consolidation_queue.get_pending_count()
         if pending > 0:
             print(f"[Startup] {pending} consolidation jobs pending from previous session")
             asyncio.create_task(self.process_consolidation_queue())
-        
+
         # 6. Check if we need immediate consolidation
         last_con = self.graph_store.get_metadata("last_consolidation")
         if last_con:
@@ -585,38 +1738,67 @@ System:
             # First run
             asyncio.create_task(self.consolidate_memories())
 
-        # 5. Start MCP loop in chosen mode
+        # 7. Start dashboard if port specified and available
+        if dashboard_port and DASHBOARD_AVAILABLE:
+            self.dashboard_port = dashboard_port
+            self.dashboard_server = DashboardServer(
+                vector_store=self.vector_store,
+                graph_store=self.graph_store,
+                llm=self.llm,
+                host=host,
+                port=dashboard_port,
+                data_dir=DATA_DIR
+            )
+            # Start dashboard in background
+            asyncio.create_task(self.dashboard_server.start())
+            print(f"[Dashboard] Web dashboard running on http://{host}:{dashboard_port}")
+        elif dashboard_port and not DASHBOARD_AVAILABLE:
+            print("[Dashboard] Dashboard dependencies not installed. Run: uv sync --extra dashboard")
+
+        # 8. Start reminder scheduler for task management
+        self.reminder_scheduler.start()
+        print("[Tasks] Reminder scheduler started")
+
+        # 9. Start MCP loop in chosen mode
         if mode == "stdio":
             await self.run_stdio()
-        elif mode == "sse":
-            await self.run_sse(host, port)
+        elif mode == "http":
+            await self.run_http(host, port)
         else:
-            raise ValueError(f"Unknown mode: {mode}. Use 'stdio' or 'sse'.")
+            raise ValueError(f"Unknown mode: {mode}. Use 'stdio' or 'http'.")
 
 def main():
     parser = argparse.ArgumentParser(description="MemCore - Agentic Memory Management System")
     parser.add_argument(
-        "--mode", 
-        choices=["stdio", "sse"], 
+        "--mode",
+        choices=["stdio", "http"],
         default="stdio",
-        help="Transport mode: stdio (client-spawned) or sse (standalone service)"
+        help="Transport mode: stdio (client-spawned) or http (standalone service)"
     )
     parser.add_argument(
-        "--host", 
+        "--host",
         default="127.0.0.1",
-        help="Host to bind to in SSE mode (default: 127.0.0.1)"
+        help="Host to bind to in HTTP mode (default: 127.0.0.1)"
     )
     parser.add_argument(
-        "--port", 
-        type=int, 
+        "--port",
+        type=int,
         default=8080,
-        help="Port to bind to in SSE mode (default: 8080)"
+        help="Port to bind to in HTTP mode (default: 8080)"
     )
-    
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8081,
+        help="Port for web dashboard (default: 8081, set to 0 to disable)"
+    )
+
     args = parser.parse_args()
-    
+
     agent = MemCoreAgent()
-    asyncio.run(agent.run(mode=args.mode, host=args.host, port=args.port))
+    # Pass dashboard_port if non-zero
+    dashboard_port = args.dashboard_port if args.dashboard_port != 0 else None
+    asyncio.run(agent.run(mode=args.mode, host=args.host, port=args.port, dashboard_port=dashboard_port))
 
 if __name__ == "__main__":
     main()

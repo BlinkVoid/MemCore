@@ -3,11 +3,11 @@
 
 <#
 .SYNOPSIS
-    Start MemCore as a standalone SSE server.
+    Start MemCore as a standalone HTTP server.
 
 .DESCRIPTION
     This script starts the MemCore memory management system as a persistent
-    standalone service. Multiple MCP clients can connect to this server via SSE.
+    standalone service. Multiple MCP clients can connect to this server via HTTP.
 
 .PARAMETER Port
     The port number to bind to (default: 8080).
@@ -127,7 +127,7 @@ Write-Host @"
 "@ -ForegroundColor Cyan
 
 Write-Host ">> Starting MemCore server..." -ForegroundColor Green
-Write-Host "   Mode:      SSE (Server-Sent Events)" -ForegroundColor Gray
+Write-Host "   Mode:      HTTP (streamable-http transport)" -ForegroundColor Gray
 Write-Host "   Host:      $ListenHost" -ForegroundColor Gray
 Write-Host "   Port:      $Port" -ForegroundColor Gray
 Write-Host "   Log:       $LogFile" -ForegroundColor Gray
@@ -147,7 +147,7 @@ $env:PYTHONPATH = $ProjectRoot
 # Check if virtual environment exists
 if (-not (Test-Path $pythonExe)) {
     Write-Host "[!] Virtual environment not found. Running uv sync first..." -ForegroundColor Yellow
-    & uv sync --extra sse
+    & uv sync
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[X] Failed to install dependencies" -ForegroundColor Red
         exit 1
@@ -182,18 +182,18 @@ if ($Background) {
     
     $process = Start-Process -FilePath $pythonExe -ArgumentList @(
         $mainScript,
-        "--mode", "sse",
+        "--mode", "http",
         "--host", $ListenHost,
         "--port", $Port
     ) -WorkingDirectory $ProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errLogFile -WindowStyle Hidden -PassThru
-    
+
     # Restore original PYTHONPATH
     $env:PYTHONPATH = $oldPythonPath
-    
+
     Write-Host "[OK] MemCore started in background (PID: $($process.Id))" -ForegroundColor Green
     Write-Host ""
     Write-Host "   Server URL: http://$ListenHost`:$Port" -ForegroundColor Cyan
-    Write-Host "   SSE Endpoint: http://$ListenHost`:$Port/sse" -ForegroundColor Cyan
+    Write-Host "   MCP Endpoint: http://$ListenHost`:$Port/mcp" -ForegroundColor Cyan
     Write-Host "   Health Check: http://$ListenHost`:$Port/health" -ForegroundColor Cyan
     Write-Host "   Logs: $LogFile" -ForegroundColor Cyan
     Write-Host "   Errors: $errLogFile" -ForegroundColor Cyan
@@ -218,7 +218,7 @@ if ($Background) {
     
     # Tee output to both console and log file
     try {
-        & $pythonExe $mainScript --mode sse --host $ListenHost --port $Port 2>&1 | Tee-Object -FilePath $LogFile
+        & $pythonExe $mainScript --mode http --host $ListenHost --port $Port 2>&1 | Tee-Object -FilePath $LogFile
     } catch {
         Write-Host "[X] Server stopped unexpectedly" -ForegroundColor Red
         Write-Host "   Error: $_" -ForegroundColor Red
