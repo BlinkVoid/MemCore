@@ -40,7 +40,7 @@ if ($Help) {
 
 # Configuration
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$DataDir = Join-Path $ProjectRoot "data"
+$DataDir = Join-Path $ProjectRoot "dataCrystal"
 $PidFile = Join-Path $DataDir "memcore.pid"
 
 Write-Host "[>>] Stopping MemCore server..." -ForegroundColor Yellow

@@ -78,9 +78,12 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DataDir = Join-Path $ProjectRoot "dataCrystal"
 $LogDir = Join-Path $DataDir "logs"
 
-# Set default log file if not provided
+# Set default log file if not provided — use timestamped name to avoid file-lock conflicts
 if ([string]::IsNullOrEmpty($LogFile)) {
-    $LogFile = Join-Path $LogDir "memcore.log"
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $LogFile = Join-Path $LogDir "memcore_$timestamp.log"
+    # Keep a stable symlink/copy alias for tooling that expects memcore.log
+    $stableLog = Join-Path $LogDir "memcore.log"
 }
 
 # Ensure directories exist
@@ -146,6 +149,23 @@ if (Test-Path $lockFile) {
     }
 }
 
+# Kill any existing MemCore instance (handles stale background processes)
+$pidFile = Join-Path $DataDir "memcore.pid"
+if (Test-Path $pidFile) {
+    $pidContent = Get-Content $pidFile -Raw
+    $existingPid = 0
+    if ([int]::TryParse($pidContent.Trim(), [ref]$existingPid)) {
+        $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Host "[!] Stopping existing MemCore instance (PID: $existingPid)..." -ForegroundColor Yellow
+            Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+            Write-Host "[+] Previous instance stopped" -ForegroundColor Green
+        }
+    }
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+}
+
 # Display startup info
 Write-Host @"
 ╔═══════════════════════════════════════════════════════════════╗
@@ -199,8 +219,8 @@ if ($Background) {
     # Run in background
     Write-Host "[*] Starting in background mode..." -ForegroundColor Cyan
     
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "[$timestamp] MemCore starting (PID: $PID)" | Out-File -FilePath $LogFile -Append
+    $startTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "[$startTime] MemCore starting (PID: $PID)" | Out-File -FilePath $LogFile -Append
     
     # Set PYTHONPATH for the new process
     $oldPythonPath = $env:PYTHONPATH
@@ -211,7 +231,6 @@ if ($Background) {
     
     $process = Start-Process -FilePath $pythonExe -ArgumentList @(
         $mainScript,
-        "--mode", "http",
         "--host", $ListenHost,
         "--port", $Port
     ) -WorkingDirectory $ProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errLogFile -WindowStyle Hidden -PassThru
@@ -247,7 +266,7 @@ if ($Background) {
     
     # Tee output to both console and log file
     try {
-        & $pythonExe $mainScript --mode http --host $ListenHost --port $Port 2>&1 | Tee-Object -FilePath $LogFile
+        & $pythonExe $mainScript --host $ListenHost --port $Port 2>&1 | Tee-Object -FilePath $LogFile -Append
     } catch {
         Write-Host "[X] Server stopped unexpectedly" -ForegroundColor Red
         Write-Host "   Error: $_" -ForegroundColor Red
