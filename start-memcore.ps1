@@ -117,6 +117,35 @@ if ($portInUse) {
     exit 1
 }
 
+# Check for stale Qdrant lock file
+$lockFile = Join-Path $DataDir "qdrant_storage\.lock"
+if (Test-Path $lockFile) {
+    try {
+        # Try to open the lock file exclusively - succeeds if stale, fails if held by another process
+        $fileStream = [System.IO.File]::Open($lockFile, "Open", "ReadWrite", "None")
+        $fileStream.Close()
+        $fileStream.Dispose()
+
+        # If we got here, the lock file is stale (not held by any process)
+        Write-Host "[!] Detected stale Qdrant lock file - removing..." -ForegroundColor Yellow
+        Remove-Item $lockFile -Force
+        Write-Host "[+] Stale lock removed" -ForegroundColor Green
+    } catch {
+        # File is locked by another process
+        Write-Host "[X] Error: Qdrant storage is locked by another running instance" -ForegroundColor Red
+        Write-Host "   Lock file: $lockFile" -ForegroundColor Yellow
+        Write-Host "   Stop the other MemCore instance before starting a new one." -ForegroundColor Yellow
+
+        # Try to find which process has it open
+        $pythonProcesses = Get-Process python -ErrorAction SilentlyContinue
+        if ($pythonProcesses) {
+            Write-Host "   Running Python processes:" -ForegroundColor Gray
+            $pythonProcesses | Select-Object Id, @{N='Memory(MB)';E={[math]::Round($_.WorkingSet/1MB,1)}} | Format-Table -AutoSize | Out-String | Write-Host -ForegroundColor Gray
+        }
+        exit 1
+    }
+}
+
 # Display startup info
 Write-Host @"
 ╔═══════════════════════════════════════════════════════════════╗

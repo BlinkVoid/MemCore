@@ -45,6 +45,14 @@ class GraphStore:
                     value TEXT
                 )
             """)
+            # Exclusion list for Obsidian files (deleted/ignored)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS obsidian_exclusions (
+                    file_path TEXT PRIMARY KEY,
+                    reason TEXT,
+                    excluded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
 
     def set_metadata(self, key: str, value: str):
@@ -75,14 +83,34 @@ class GraphStore:
             # Find all node IDs for this source
             cursor.execute("SELECT id FROM nodes WHERE source_uri = ?", (source_uri,))
             node_ids = [row[0] for row in cursor.fetchall()]
-            
+
             if node_ids:
                 placeholders = ','.join(['?'] * len(node_ids))
                 # Delete related edges
                 cursor.execute(f"DELETE FROM edges WHERE source IN ({placeholders}) OR target IN ({placeholders})", node_ids + node_ids)
                 # Delete nodes
                 cursor.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids)
-            
+
+            conn.commit()
+
+    def delete_node(self, node_id: str):
+        """Delete a single node and its edges."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # Delete edges first (foreign key constraints)
+            cursor.execute("DELETE FROM edges WHERE source = ? OR target = ?", (node_id, node_id))
+            # Delete node
+            cursor.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+            conn.commit()
+
+    def update_node_metadata(self, node_id: str, metadata: Dict[str, Any]):
+        """Update a node's metadata."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE nodes SET metadata = ? WHERE id = ?",
+                (json.dumps(metadata), node_id)
+            )
             conn.commit()
 
     def add_edge(self, source: str, target: str, edge_type: str, weight: float = 1.0, metadata: Optional[Dict[str, Any]] = None):
@@ -193,6 +221,39 @@ class GraphStore:
     def link_request_to_memory(self, request_id: str, memory_id: str, weight: float = 1.0):
         """Create a FULFILLED_BY edge linking a request to a memory that satisfied it."""
         self.add_edge(request_id, memory_id, "FULFILLED_BY", weight)
+
+    # Obsidian Exclusion List Management
+    def add_obsidian_exclusion(self, file_path: str, reason: str = "deleted_by_user"):
+        """Add a file to the exclusion list to prevent re-ingestion."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO obsidian_exclusions (file_path, reason, excluded_at) VALUES (?, ?, ?)",
+                (file_path, reason, datetime.now().isoformat())
+            )
+            conn.commit()
+
+    def remove_obsidian_exclusion(self, file_path: str):
+        """Remove a file from the exclusion list."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM obsidian_exclusions WHERE file_path = ?", (file_path,))
+            conn.commit()
+
+    def is_obsidian_excluded(self, file_path: str) -> bool:
+        """Check if a file is in the exclusion list."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM obsidian_exclusions WHERE file_path = ?", (file_path,))
+            return cursor.fetchone() is not None
+
+    def get_obsidian_exclusions(self) -> List[Dict[str, Any]]:
+        """Get all excluded files."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM obsidian_exclusions ORDER BY excluded_at DESC")
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_stats(self) -> Dict[str, Any]:
         """Returns statistics about the graph store."""

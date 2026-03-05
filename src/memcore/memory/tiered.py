@@ -180,7 +180,8 @@ class TieredContextManager:
                     "summary": mem["summary"],
                     "overview": overview,
                     "score": mem["final_score"],
-                    "quadrants": mem.get("quadrants", [])
+                    "quadrants": mem.get("quadrants", []),
+                    "boost": mem.get("dynamic_boost", 1.0)
                 })
 
         # 4. Build response

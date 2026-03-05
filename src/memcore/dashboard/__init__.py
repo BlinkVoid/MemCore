@@ -1,8 +1,4 @@
 """
-MemCore Web Dashboard
-
-Browser-based management interface for memories.
+MemCore Dashboard Package
 """
-from .server import DashboardServer, run_dashboard
-
-__all__ = ["DashboardServer", "run_dashboard"]
+from .server import DashboardRouter

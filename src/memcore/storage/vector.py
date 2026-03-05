@@ -24,7 +24,6 @@ class VectorStore:
             existing_dim = info.config.params.vectors.size
             if existing_dim != self.dimension:
                 print(f"Warning: Collection dimension {existing_dim} != expected {self.dimension}.")
-                # In a real app, we might want to migrate or use a different collection name
 
     def upsert_memory(self, id: str, vector: List[float], payload: Dict[str, Any]):
         self.client.upsert(
@@ -50,13 +49,14 @@ class VectorStore:
                 ]
             )
         
-        return self.client.query_points(
+        result = self.client.query_points(
             collection_name=self.collection_name,
             query=vector,
             limit=limit,
             query_filter=search_filter,
             with_payload=True
         )
+        return result.points
 
     def get_raw_memories(self, limit: int = 100):
         from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -91,6 +91,21 @@ class VectorStore:
             )
         )
 
+    def delete_memory(self, memory_id: str):
+        """Delete a single memory by ID."""
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=[memory_id]
+        )
+
+    def update_memory(self, memory_id: str, payload: Dict[str, Any]):
+        """Update a memory's payload."""
+        self.client.set_payload(
+            collection_name=self.collection_name,
+            payload=payload,
+            points=[memory_id]
+        )
+
     def update_memory_access(self, memory_id: str):
         """Updates the last_accessed timestamp for a memory."""
         from datetime import datetime
@@ -102,41 +117,41 @@ class VectorStore:
 
     def get_stats(self) -> Dict[str, Any]:
         """Returns statistics about the vector store."""
-        collection_info = self.client.get_collection(self.collection_name)
-        total_count = collection_info.points_count
-        
-        # Get counts by type
-        types_count = {}
-        quadrants_count = {}
-        
-        # Scroll through all points to get stats
-        offset = None
-        while True:
-            results, offset = self.client.scroll(
+        try:
+            collection_info = self.client.get_collection(self.collection_name)
+            total_count = collection_info.points_count
+
+            # Optimized quadrant counts using Qdrant's count API
+            quadrants_count = {}
+            for q in ["coding", "personal", "research", "ai_instructions"]:
+                from qdrant_client.models import Filter, FieldCondition, MatchValue
+                count = self.client.count(
+                    collection_name=self.collection_name,
+                    count_filter=Filter(
+                        must=[FieldCondition(key="quadrants", match=MatchValue(value=q))]
+                    )
+                ).count
+                if count > 0:
+                    quadrants_count[q] = count
+
+            # Type counts - sample first 100 for variety
+            types_count = {}
+            results, _ = self.client.scroll(
                 collection_name=self.collection_name,
-                limit=1000,
-                offset=offset,
+                limit=100,
                 with_payload=True
             )
-            
-            for point in results:
-                payload = point.payload
-                # Count by type
-                mem_type = payload.get("type", "unknown")
-                types_count[mem_type] = types_count.get(mem_type, 0) + 1
-                
-                # Count by quadrant
-                quads = payload.get("quadrants", [])
-                for q in quads:
-                    quadrants_count[q] = quadrants_count.get(q, 0) + 1
-            
-            if offset is None:
-                break
-        
-        return {
-            "total_memories": total_count,
-            "by_type": types_count,
-            "by_quadrant": quadrants_count,
-            "dimension": self.dimension,
-            "collection_name": self.collection_name
-        }
+            for res in results:
+                t = res.payload.get("type", "raw")
+                types_count[t] = types_count.get(t, 0) + 1
+
+            return {
+                "total_memories": total_count,
+                "by_type": types_count,
+                "by_quadrant": quadrants_count,
+                "dimension": self.dimension,
+                "collection_name": self.collection_name
+            }
+        except Exception as e:
+            print(f"Error getting vector stats: {e}")
+            return {"error": str(e), "total_memories": 0}

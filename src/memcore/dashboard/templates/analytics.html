@@ -1,0 +1,473 @@
+<!-- src/memcore/dashboard/templates/analytics.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MemCore Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-primary: #0a0f1c;
+            --bg-secondary: #111827;
+            --bg-tertiary: #1f2937;
+            --border-color: #374151;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-cyan: #06b6d4;
+            --accent-pink: #ec4899;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .header {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-brand { display: flex; align-items: center; gap: 0.75rem; }
+        .header-logo {
+            width: 40px; height: 40px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 10px; display: flex; align-items: center; justify-content: center;
+            font-size: 1.25rem;
+        }
+        .header h1 {
+            font-size: 1.5rem; font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .nav-links { display: flex; gap: 1rem; }
+        .nav-link {
+            padding: 0.5rem 1rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        .nav-link:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+        .nav-link.active { color: var(--accent-blue); background: rgba(59, 130, 246, 0.1); }
+        .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+        .page-title {
+            font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;
+            display: flex; align-items: center; gap: 0.75rem;
+        }
+        .page-subtitle {
+            color: var(--text-secondary); margin-bottom: 1.5rem;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem; margin-bottom: 1.5rem;
+        }
+        .stat-card {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 12px; padding: 1.25rem; transition: all 0.3s ease;
+        }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--accent-blue); }
+        .stat-value { font-size: 2rem; font-weight: 700; color: var(--text-primary); }
+        .stat-label { font-size: 0.875rem; color: var(--text-secondary); }
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem; margin-bottom: 1.5rem;
+        }
+        @media (max-width: 1024px) { .charts-grid { grid-template-columns: 1fr; } }
+        .chart-card {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 12px; padding: 1.25rem;
+        }
+        .chart-card.full-width { grid-column: 1 / -1; }
+        .chart-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 1rem;
+        }
+        .chart-title {
+            font-size: 1rem; font-weight: 600;
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .chart-container {
+            position: relative; height: 250px;
+        }
+        .chart-container.tall { height: 300px; }
+        .top-files-list {
+            list-style: none;
+        }
+        .top-files-list li {
+            display: flex; justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .top-files-list li:last-child { border-bottom: none; }
+        .file-name { font-size: 0.875rem; color: var(--text-primary); }
+        .file-count { font-size: 0.875rem; color: var(--accent-blue); }
+        .btn-stop { padding: 0.5rem; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; color: var(--accent-red); cursor: pointer; font-size: 1rem; transition: all 0.2s; margin-left: 0.5rem; }
+        .btn-stop:hover { background: rgba(239, 68, 68, 0.3); border-color: var(--accent-red); transform: scale(1.05); }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-brand">
+            <div class="header-logo">🧠</div>
+            <h1>MemCore</h1>
+        </div>
+        <nav class="nav-links">
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/analytics" class="nav-link active">Analytics</a>
+        </nav>
+        <button class="btn-stop" onclick="stopServer()" title="Stop MemCore Server">⏹️</button>
+    </header>
+
+    <div class="container">
+        <h2 class="page-title">📊 Analytics Overview</h2>
+        <p class="page-subtitle">Detailed statistics and visualizations of your MemCore data</p>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="total-memories">-</div>
+                <div class="stat-label">Total Memories</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="total-tags">-</div>
+                <div class="stat-label">Unique Tags</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avg-importance">-</div>
+                <div class="stat-label">Avg Importance</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="active-quadrants">-</div>
+                <div class="stat-label">Active Quadrants</div>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">🎯 Knowledge by Quadrant</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="quadrantChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">📦 Memory Types</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="typeChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">🏷️ Top Tags</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="tagChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">⭐ Importance Distribution</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="importanceChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card full-width">
+                <div class="chart-header">
+                    <span class="chart-title">📈 Ingestion Timeline (Last 30 Days)</span>
+                </div>
+                <div class="chart-container tall">
+                    <canvas id="timelineChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">📂 Memory Sources</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="sourceChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">📄 Top Source Files</span>
+                </div>
+                <div class="chart-container" style="overflow-y: auto;">
+                    <ul class="top-files-list" id="top-files-list">
+                        <li><span class="file-name">Loading...</span></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart.js default configuration
+        Chart.defaults.color = '#9ca3af';
+        Chart.defaults.borderColor = '#374151';
+        Chart.defaults.font.family = "'Inter', -apple-system, BlinkMacSystemFont, sans-serif";
+
+        let charts = {};
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadAnalytics();
+        });
+
+        async function loadAnalytics() {
+            try {
+                const response = await fetch('/api/analytics');
+                const data = await response.json();
+
+                // Update summary stats
+                const totalMemories = Object.values(data.quadrants || {}).reduce((a, b) => a + (b.count || 0), 0);
+                document.getElementById('total-memories').textContent = totalMemories.toLocaleString();
+                document.getElementById('total-tags').textContent = Object.keys(data.tags || {}).length;
+                document.getElementById('avg-importance').textContent = (data.importance?.average * 100 || 0).toFixed(0) + '%';
+                document.getElementById('active-quadrants').textContent = Object.keys(data.quadrants || {}).length;
+
+                // Render charts
+                renderQuadrantChart(data.quadrants);
+                renderTagChart(data.tags);
+                renderTypeChart(data.types);
+                renderImportanceChart(data.importance);
+                renderTimelineChart(data.timeline);
+                renderSourceChart(data.sources);
+                renderTopFiles(data.top_files);
+
+            } catch (error) {
+                console.error('Failed to load analytics:', error);
+            }
+        }
+
+        function renderQuadrantChart(quadrants) {
+            const ctx = document.getElementById('quadrantChart').getContext('2d');
+            const labels = Object.keys(quadrants || {});
+            const data = labels.map(q => quadrants[q].count);
+            const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#ef4444', '#84cc16'];
+
+            charts.quadrant = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderWidth: 0,
+                        hoverOffset: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right', labels: { padding: 15, usePointStyle: true } }
+                    },
+                    cutout: '65%'
+                }
+            });
+        }
+
+        function renderTagChart(tags) {
+            const ctx = document.getElementById('tagChart').getContext('2d');
+            const sortedTags = Object.entries(tags || {}).sort((a, b) => b[1] - a[1]).slice(0, 15);
+            const labels = sortedTags.map(t => t[0]);
+            const data = sortedTags.map(t => t[1]);
+
+            charts.tag = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Count',
+                        data: data,
+                        backgroundColor: '#8b5cf6',
+                        borderRadius: 4,
+                        barThickness: 20
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#6b7280' } },
+                        y: { grid: { display: false }, ticks: { color: '#9ca3af' } }
+                    }
+                }
+            });
+        }
+
+        function renderTypeChart(types) {
+            const ctx = document.getElementById('typeChart').getContext('2d');
+            const labels = Object.keys(types || {});
+            const data = labels.map(t => types[t].count);
+            const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899'];
+
+            charts.type = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right', labels: { padding: 15, usePointStyle: true } }
+                    }
+                }
+            });
+        }
+
+        function renderImportanceChart(importance) {
+            const ctx = document.getElementById('importanceChart').getContext('2d');
+            const data = [
+                importance?.high?.count || 0,
+                importance?.medium?.count || 0,
+                importance?.low?.count || 0
+            ];
+
+            charts.importance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['High (80-100%)', 'Medium (50-79%)', 'Low (0-49%)'],
+                    datasets: [{
+                        label: 'Memories',
+                        data: data,
+                        backgroundColor: ['#10b981', '#f59e0b', '#6b7280'],
+                        borderRadius: 6,
+                        barThickness: 40
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: '#374151' } },
+                        x: { grid: { display: false } }
+                    }
+                }
+            });
+        }
+
+        function renderTimelineChart(timeline) {
+            const ctx = document.getElementById('timelineChart').getContext('2d');
+            const labels = (timeline || []).map(t => t.date);
+            const data = (timeline || []).map(t => t.count);
+
+            charts.timeline = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Memories Added',
+                        data: data,
+                        fill: true,
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderColor: '#3b82f6',
+                        tension: 0.4,
+                        pointRadius: 3,
+                        pointBackgroundColor: '#3b82f6',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: '#374151' } },
+                        x: { grid: { display: false }, ticks: { maxTicksLimit: 10 } }
+                    }
+                }
+            });
+        }
+
+        function renderSourceChart(sources) {
+            const ctx = document.getElementById('sourceChart').getContext('2d');
+            const labels = Object.keys(sources || {});
+            const data = labels.map(s => sources[s].count);
+            const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899'];
+
+            charts.source = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderWidth: 0,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom', labels: { padding: 15, usePointStyle: true } }
+                    },
+                    cutout: '60%'
+                }
+            });
+        }
+
+        function renderTopFiles(files) {
+            const container = document.getElementById('top-files-list');
+            if (!files || files.length === 0) {
+                container.innerHTML = '<li><span class="file-name">No files found</span></li>';
+                return;
+            }
+            container.innerHTML = files.map(f => `
+                <li>
+                    <span class="file-name">${f.name}</span>
+                    <span class="file-count">${f.count}</span>
+                </li>
+            `).join('');
+        }
+
+        async function stopServer() {
+            if (!confirm('Are you sure you want to stop the MemCore server?')) return;
+            try {
+                const response = await fetch('/api/stop', { method: 'POST' });
+                const data = await response.json();
+                alert(data.message);
+            } catch (error) {
+                console.error('Failed to stop server:', error);
+            }
+        }
+    </script>
+</body>
+</html>

@@ -5,10 +5,17 @@ Usage: /ingest_consolidated [--source=/path/to/other/dataCrystal]
 """
 import os
 import uuid
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-import frontmatter  # For reading YAML frontmatter from markdown
+
+try:
+    import frontmatter  # For reading YAML frontmatter from markdown
+    FRONTMATTER_AVAILABLE = True
+except ImportError:
+    FRONTMATTER_AVAILABLE = False
+    frontmatter = None
 
 
 class IngestConsolidatedSkill:
@@ -92,13 +99,32 @@ class IngestConsolidatedSkill:
                 "error": str(e)
             }
 
+    def _parse_frontmatter(self, file_path: Path) -> tuple:
+        """Parse YAML frontmatter from markdown file."""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        if FRONTMATTER_AVAILABLE:
+            post = frontmatter.loads(content)
+            return post.metadata, post.content
+        else:
+            # Manual frontmatter parsing
+            if content.startswith('---'):
+                parts = content.split('---', 2)
+                if len(parts) >= 3:
+                    try:
+                        import yaml
+                        metadata = yaml.safe_load(parts[1])
+                        return metadata or {}, parts[2].strip()
+                    except ImportError:
+                        # No yaml, return empty metadata
+                        return {}, content
+            return {}, content
+
     async def _import_file(self, file_path: Path, dry_run: bool) -> Dict[str, Any]:
         """Import a single consolidated markdown file."""
         # Read file with frontmatter
-        post = frontmatter.load(str(file_path))
-
-        # Extract metadata from frontmatter
-        metadata = post.metadata
+        metadata, content = self._parse_frontmatter(file_path)
 
         # Skip if not a consolidated file
         if metadata.get("type") != "consolidated":
@@ -107,9 +133,6 @@ class IngestConsolidatedSkill:
         quadrant = metadata.get("quadrant", "general")
         theme = metadata.get("theme", "general")
         source_count = metadata.get("memory_count", 0)
-
-        # Parse content into individual memories
-        content = post.content
 
         # Split by headers (## indicates a memory)
         sections = self._split_by_headers(content)

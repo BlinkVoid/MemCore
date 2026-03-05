@@ -20,7 +20,7 @@ class VaultSyncSkill:
     def __init__(self, document_watcher, vector_store, llm):
         self.watcher = document_watcher
         self.vector_store = vector_store
-        self.llm = lll
+        self.llm = llm
 
     async def execute(
         self,

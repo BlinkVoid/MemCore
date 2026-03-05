@@ -117,8 +117,12 @@ class MemoryConsolidator:
         
         return results
     
-    async def _process_job(self, job: Dict[str, Any]):
-        """Process a single consolidation job through the pipeline."""
+    async def _process_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a single consolidation job through the pipeline.
+        
+        Returns:
+            The extracted data (facts and instructions) for reuse by callers.
+        """
         # Stage 1: Fact & Instruction Extraction
         extracted = await self._stage_extract({
             "id": job["memory_id"],
@@ -131,6 +135,8 @@ class MemoryConsolidator:
         # Stage 2: Process extracted items (facts and instructions)
         for item in extracted.get("facts", []) + extracted.get("instructions", []):
             await self._process_consolidated_item(item, job)
+
+        return extracted
 
     async def process_queue_with_synthesis(self, batch_size: int = 10) -> Dict[str, Any]:
         """
@@ -160,18 +166,11 @@ class MemoryConsolidator:
         # Stage 1: Process individual jobs
         for job in jobs:
             try:
-                await self._process_job(job)
+                extracted = await self._process_job(job)
                 self.queue.mark_completed(job["id"], {"memory_id": job["memory_id"]})
                 results["completed"] += 1
 
-                # Collect facts for later synthesis
-                extracted = await self._stage_extract({
-                    "id": job["memory_id"],
-                    "content": job["memory_content"],
-                    "summary": job["memory_summary"],
-                    "quadrants": job["quadrants"],
-                    "source_uri": job.get("source_uri")
-                })
+                # Collect facts for later synthesis (reuse extracted data from _process_job)
                 for fact in extracted.get("facts", []):
                     all_facts.append({
                         "id": job["memory_id"],

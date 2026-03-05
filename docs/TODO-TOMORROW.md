@@ -427,6 +427,34 @@ start http://127.0.0.1:8080/status
 uv run scripts/verify_config.py
 ```
 
----
+## ⚠️ Ongoing Debugging & Technical Challenges
 
-*Ready to continue development. Pick a task from Next Steps above.*
+The following issues have been identified during the Phase 5/6 transition and are the primary focus of the current architectural redesign:
+
+### 1. Dual-Server Conflict (MCP vs. Dashboard)
+- **Problem**: `FastMCP.run()` is a synchronous, blocking call that spawns its own Uvicorn instance. Attempting to run a second Uvicorn/Starlette instance for the Dashboard in a separate thread (via `threading.Thread` or `asyncio.to_thread`) causes event loop deadlocks and port binding race conditions.
+- **Symptom**: Ports 8080/8081 appearing "closed" even when the process is running, or 404 errors on valid routes.
+- **Solution**: Re-architecting to a **Unified Server**. Use FastMCP only for tool registration, then extract its internal `.app` (Starlette) and attach Dashboard routes directly to it. Run everything under a single Uvicorn instance on port 8080.
+
+### 2. Qdrant Storage Locking
+- **Problem**: Qdrant's local storage mode enforces a strict single-process lock. If `VectorStore` is initialized more than once (e.g., once in the main agent and once in a separate dashboard thread), it throws `RuntimeError: Storage folder ... is already accessed`.
+- **Symptom**: Startup crashes with "Permission Denied" or "Already accessed" errors.
+- **Solution**: Initialize `VectorStore` exactly once at the top level and pass the instance explicitly to all sub-components.
+
+### 3. FastEmbed Initialization Hangs
+- **Problem**: The `TextEmbedding` library is heavy and synchronous during model loading. If initialized lazily inside an async retrieval task, it can hang the entire event loop.
+- **Symptom**: The server starts, but the first search or save operation hangs indefinitely.
+- **Solution**: Moved initialization to `LLMInterface.__init__` (eager loading) and forced `providers=["CPUExecutionProvider"]` to avoid GPU discovery overhead.
+
+### 4. Zombie Process Management
+- **Problem**: Windows doesn't always clean up child processes if the parent CLI is killed. Lingering `python.exe` instances hold the Qdrant lock file (`.lock`).
+- **Symptom**: New code changes don't seem to take effect because the new process crashes immediately on the DB lock, while an old "zombie" process continues to respond (or hang) on the port.
+- **Action**: Use `taskkill` or `Stop-Process` to ensure a totally clean environment before every restart.
+
+## 🛠️ Redesign Progress (March 5, 2026)
+
+- [x] Create `DashboardRouter` to replace standalone `DashboardServer`.
+- [x] Rewrite `main.py` to use a single unified Starlette app.
+- [x] Fix `VectorStore.get_stats()` indentation and missing method errors.
+- [x] Eagerly initialize `fastembed` in the main thread.
+- [ ] **Next Step**: Verify unified port 8080 handles both MCP JSON-RPC and Dashboard HTML.

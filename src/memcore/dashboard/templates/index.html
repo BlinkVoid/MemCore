@@ -1,0 +1,709 @@
+<!-- src/memcore/dashboard/templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MemCore Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-primary: #0a0f1c;
+            --bg-secondary: #111827;
+            --bg-tertiary: #1f2937;
+            --border-color: #374151;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+            --accent-red: #ef4444;
+            --quadrant-coding: #3b82f6;
+            --quadrant-personal: #ec4899;
+            --quadrant-research: #10b981;
+            --quadrant-ai: #f59e0b;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-brand { display: flex; align-items: center; gap: 0.75rem; }
+        .header-logo {
+            width: 40px; height: 40px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 10px; display: flex; align-items: center; justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .header h1 {
+            font-size: 1.5rem; font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+
+        .connection-status { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); }
+        .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        .nav-links { display: flex; gap: 0.5rem; }
+        .nav-link { padding: 0.5rem 1rem; color: var(--text-secondary); text-decoration: none; border-radius: 8px; transition: all 0.2s; font-size: 0.875rem; }
+        .nav-link:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+        .nav-link.active { color: var(--accent-blue); background: rgba(59, 130, 246, 0.1); }
+
+        .btn-stop { padding: 0.5rem; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; color: var(--accent-red); cursor: pointer; font-size: 1rem; transition: all 0.2s; margin-left: 0.5rem; }
+        .btn-stop:hover { background: rgba(239, 68, 68, 0.3); border-color: var(--accent-red); transform: scale(1.05); }
+
+        .container { max-width: 1600px; margin: 0 auto; padding: 1.5rem; }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+
+        .stat-card {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 12px; padding: 1.25rem; transition: all 0.3s ease;
+            position: relative; overflow: hidden;
+        }
+        .stat-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple)); opacity: 0; transition: opacity 0.3s;
+        }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--accent-blue); box-shadow: 0 10px 40px rgba(59, 130, 246, 0.1); }
+        .stat-card:hover::before { opacity: 1; }
+
+        .stat-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; margin-bottom: 0.75rem; }
+        .stat-icon.memories { background: rgba(59, 130, 246, 0.2); }
+        .stat-icon.nodes { background: rgba(139, 92, 246, 0.2); }
+        .stat-icon.edges { background: rgba(16, 185, 129, 0.2); }
+        .stat-icon.reflections { background: rgba(245, 158, 11, 0.2); }
+
+        .stat-value { font-size: 2rem; font-weight: 700; color: var(--text-primary); line-height: 1; }
+        .stat-label { font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.25rem; }
+
+        .main-layout { display: grid; grid-template-columns: 1fr 380px; gap: 1.5rem; }
+        @media (max-width: 1200px) { .main-layout { grid-template-columns: 1fr; } }
+
+        .panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; }
+        .panel-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.02); }
+        .panel-title { font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
+        .panel-body { padding: 1.25rem; }
+
+        .quadrants-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+        .quadrant-card { background: var(--bg-tertiary); border: 2px solid transparent; border-radius: 12px; padding: 1rem; cursor: pointer; transition: all 0.3s ease; }
+
+        .quadrant-card.coding { border-color: rgba(59, 130, 246, 0.3); }
+        .quadrant-card.coding:hover, .quadrant-card.coding.active { border-color: var(--quadrant-coding); background: rgba(59, 130, 246, 0.1); }
+        .quadrant-card.personal { border-color: rgba(236, 72, 153, 0.3); }
+        .quadrant-card.personal:hover, .quadrant-card.personal.active { border-color: var(--quadrant-personal); background: rgba(236, 72, 153, 0.1); }
+        .quadrant-card.research { border-color: rgba(16, 185, 129, 0.3); }
+        .quadrant-card.research:hover, .quadrant-card.research.active { border-color: var(--quadrant-research); background: rgba(16, 185, 129, 0.1); }
+        .quadrant-card.ai { border-color: rgba(245, 158, 11, 0.3); }
+        .quadrant-card.ai:hover, .quadrant-card.ai.active { border-color: var(--quadrant-ai); background: rgba(245, 158, 11, 0.1); }
+
+        .quadrant-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+        .quadrant-name { font-weight: 600; font-size: 0.9375rem; }
+        .quadrant-icon { font-size: 1.25rem; }
+        .quadrant-count { font-size: 1.5rem; font-weight: 700; }
+        .quadrant-bar { height: 4px; background: rgba(255, 255, 255, 0.1); border-radius: 2px; margin-top: 0.75rem; overflow: hidden; }
+        .quadrant-fill { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
+        .quadrant-card.coding .quadrant-fill { background: var(--quadrant-coding); }
+        .quadrant-card.personal .quadrant-fill { background: var(--quadrant-personal); }
+        .quadrant-card.research .quadrant-fill { background: var(--quadrant-research); }
+        .quadrant-card.ai .quadrant-fill { background: var(--quadrant-ai); }
+
+        .search-section { display: flex; gap: 0.75rem; margin-bottom: 1rem; }
+        .search-input-wrapper { flex: 1; position: relative; }
+        .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--text-secondary); }
+        .search-input { width: 100%; padding: 0.75rem 1rem 0.75rem 2.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-primary); font-size: 0.9375rem; transition: all 0.2s; }
+        .search-input:focus { outline: none; border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
+
+        .btn { padding: 0.75rem 1.25rem; background: var(--accent-blue); border: none; border-radius: 10px; color: white; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .btn:hover { background: #2563eb; transform: translateY(-1px); }
+        .btn-secondary { background: var(--bg-tertiary); border: 1px solid var(--border-color); }
+        .btn-secondary:hover { background: var(--border-color); }
+
+        .filter-tags { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        .filter-tag { padding: 0.375rem 0.875rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 20px; font-size: 0.8125rem; cursor: pointer; transition: all 0.2s; }
+        .filter-tag:hover { border-color: var(--accent-blue); }
+        .filter-tag.active { background: var(--accent-blue); border-color: var(--accent-blue); }
+
+        .memory-list { display: flex; flex-direction: column; gap: 0.75rem; }
+        .memory-card { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 10px; padding: 1rem; cursor: pointer; transition: all 0.2s; }
+        .memory-card:hover { border-color: var(--accent-blue); transform: translateX(4px); }
+
+        .memory-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; }
+        .memory-title { font-weight: 500; color: var(--text-primary); line-height: 1.4; flex: 1; }
+        .memory-type-badge { padding: 0.25rem 0.625rem; border-radius: 6px; font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.025em; }
+        .memory-type-badge.raw { background: rgba(148, 163, 184, 0.2); color: #94a3b8; }
+        .memory-type-badge.consolidated { background: rgba(16, 185, 129, 0.2); color: #10b981; }
+        .memory-type-badge.reflection { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; }
+
+        .memory-preview { font-size: 0.875rem; color: var(--text-secondary); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 0.75rem; }
+        .memory-meta { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+        .memory-tag { padding: 0.25rem 0.5rem; background: rgba(59, 130, 246, 0.15); border-radius: 4px; font-size: 0.75rem; color: var(--accent-blue); }
+        .memory-quadrant { padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
+        .memory-quadrant.coding { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+        .memory-quadrant.personal { background: rgba(236, 72, 153, 0.15); color: #f472b6; }
+        .memory-quadrant.research { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+        .memory-quadrant.ai { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+        .memory-score { font-size: 0.75rem; color: var(--text-secondary); }
+
+        .sidebar { display: flex; flex-direction: column; gap: 1rem; }
+
+        .ai-work-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: var(--bg-tertiary); border-radius: 8px; margin-bottom: 0.5rem; }
+        .ai-status { width: 8px; height: 8px; border-radius: 50%; }
+        .ai-status.processing { background: var(--accent-orange); animation: pulse 1.5s infinite; }
+        .ai-status.idle { background: var(--accent-green); }
+        .ai-status.queued { background: var(--text-secondary); }
+        .ai-work-info { flex: 1; }
+        .ai-work-label { font-size: 0.875rem; font-weight: 500; }
+        .ai-work-detail { font-size: 0.75rem; color: var(--text-secondary); }
+        .queue-progress { height: 6px; background: var(--bg-secondary); border-radius: 3px; margin-top: 0.75rem; overflow: hidden; }
+        .queue-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple)); border-radius: 3px; transition: width 0.5s ease; }
+
+        .activity-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto; }
+        .activity-item { display: flex; gap: 0.75rem; padding: 0.625rem; border-radius: 8px; transition: background 0.2s; }
+        .activity-item:hover { background: var(--bg-tertiary); }
+        .activity-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.875rem; flex-shrink: 0; }
+        .activity-icon.save { background: rgba(59, 130, 246, 0.2); }
+        .activity-icon.query { background: rgba(16, 185, 129, 0.2); }
+        .activity-icon.consolidate { background: rgba(245, 158, 11, 0.2); }
+        .activity-icon.delete { background: rgba(239, 68, 68, 0.2); }
+        .activity-content { flex: 1; min-width: 0; }
+        .activity-text { font-size: 0.8125rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .activity-time { font-size: 0.6875rem; color: var(--text-secondary); }
+
+        .tag-cloud { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .tag-item { padding: 0.375rem 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 20px; font-size: 0.8125rem; cursor: pointer; transition: all 0.2s; }
+        .tag-item:hover { border-color: var(--accent-purple); background: rgba(139, 92, 246, 0.1); }
+
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(4px); z-index: 1000; justify-content: center; align-items: center; padding: 2rem; }
+        .modal-overlay.active { display: flex; }
+        .modal { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 16px; width: 100%; max-width: 700px; max-height: 85vh; overflow: hidden; display: flex; flex-direction: column; animation: modalSlide 0.3s ease; }
+        @keyframes modalSlide { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .modal-header { padding: 1.25rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+        .modal-title { font-size: 1.125rem; font-weight: 600; }
+        .modal-close { background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; padding: 0.25rem; transition: color 0.2s; }
+        .modal-close:hover { color: var(--text-primary); }
+        .modal-body { padding: 1.25rem; overflow-y: auto; }
+        .memory-detail-section { margin-bottom: 1.25rem; }
+        .memory-detail-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.375rem; }
+        .memory-detail-content { background: var(--bg-tertiary); border-radius: 8px; padding: 1rem; font-size: 0.9375rem; line-height: 1.6; white-space: pre-wrap; }
+
+        .empty-state { text-align: center; padding: 3rem 1.5rem; color: var(--text-secondary); }
+        .empty-icon { font-size: 3rem; margin-bottom: 1rem; opacity: 0.5; }
+        .empty-text { font-size: 1rem; margin-bottom: 0.5rem; }
+        .empty-subtext { font-size: 0.875rem; opacity: 0.7; }
+        .loading { text-align: center; padding: 2rem; color: var(--text-secondary); }
+        .spinner { width: 40px; height: 40px; border: 3px solid var(--border-color); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 1rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-brand">
+            <div class="header-logo">🧠</div>
+            <h1>MemCore Dashboard</h1>
+        </div>
+        <nav class="nav-links">
+            <a href="/" class="nav-link active">Dashboard</a>
+            <a href="/analytics" class="nav-link">Analytics</a>
+        </nav>
+        <div class="connection-status">
+            <span class="connection-dot"></span>
+            <span id="connection-text">Connected</span>
+        </div>
+        <button class="btn-stop" onclick="stopServer()" title="Stop MemCore Server">⏹️</button>
+    </header>
+
+    <div class="container">
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon memories">💭</div>
+                <div class="stat-value" id="stat-memories">-</div>
+                <div class="stat-label">Total Memories</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon nodes">🕸️</div>
+                <div class="stat-value" id="stat-nodes">-</div>
+                <div class="stat-label">Graph Nodes</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon edges">🔗</div>
+                <div class="stat-value" id="stat-edges">-</div>
+                <div class="stat-label">Relationships</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon reflections">💡</div>
+                <div class="stat-value" id="stat-reflections">-</div>
+                <div class="stat-label">Reflections</div>
+            </div>
+        </div>
+
+        <div class="quadrants-grid" id="quadrants-container">
+            <!-- Quadrants rendered dynamically -->
+            <div class="loading"><div class="spinner"></div>Loading quadrants...</div>
+        </div>
+
+        <div class="main-layout">
+            <div class="main-content">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">🔍 Search Memories</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="search-section">
+                            <div class="search-input-wrapper">
+                                <span class="search-icon">🔍</span>
+                                <input type="text" class="search-input" id="search-input" placeholder="Search memories..." onkeypress="if(event.key==='Enter') performSearch()">
+                            </div>
+                            <button class="btn" onclick="performSearch()">Search</button>
+                        </div>
+
+                        <div class="filter-tags">
+                            <span class="filter-tag active" onclick="filterByType('all')">All Types</span>
+                            <span class="filter-tag" onclick="filterByType('raw')">Raw</span>
+                            <span class="filter-tag" onclick="filterByType('consolidated')">Consolidated</span>
+                            <span class="filter-tag" onclick="filterByType('reflection')">Reflections</span>
+                        </div>
+
+                        <div class="memory-list" id="memory-list">
+                            <div class="loading"><div class="spinner"></div>Loading memories...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">🤖 AI Activity</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="ai-work-item">
+                            <div class="ai-status idle" id="consolidation-status"></div>
+                            <div class="ai-work-info">
+                                <div class="ai-work-label">Consolidation</div>
+                                <div class="ai-work-detail" id="consolidation-detail">Checking...</div>
+                            </div>
+                        </div>
+                        <div class="queue-progress"><div class="queue-progress-fill" id="queue-progress" style="width: 0%"></div></div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">📊 Recent Activity</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="activity-list" id="activity-list"><div class="loading">Loading...</div></div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">🏷️ Popular Tags</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="tag-cloud" id="tag-cloud"><div class="loading">Loading tags...</div></div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">📋 Server Logs</span>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <select id="log-level" class="search-input" style="width: auto; padding: 0.25rem 0.5rem; font-size: 0.75rem;" onchange="loadLogs()">
+                                <option value="all">All</option>
+                                <option value="error">Errors</option>
+                                <option value="warn">Warnings</option>
+                                <option value="info">Info</option>
+                            </select>
+                            <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="loadLogs()">Refresh</button>
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <div class="activity-list" id="log-list" style="max-height: 250px; font-family: monospace; font-size: 0.75rem;">
+                            <div class="loading">Loading logs...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="memory-modal" onclick="if(event.target === this) closeModal()">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title" id="modal-title">Memory Detail</span>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <script>
+        let memories = [];
+        let currentFilter = { type: 'all', quadrant: null };
+        let quadrantStats = {};
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStats();
+            loadQuadrantStats();
+            loadMemories();
+            loadActivity();
+            loadTags();
+            loadLogs();
+            loadQueueStatus();
+            setInterval(loadStats, 30000);
+            setInterval(loadQueueStatus, 10000);
+            setInterval(loadActivity, 30000);
+        });
+
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                document.getElementById('stat-memories').textContent = data.vector?.total_memories || 0;
+                document.getElementById('stat-nodes').textContent = data.graph?.total_nodes || 0;
+                document.getElementById('stat-edges').textContent = data.graph?.total_edges || 0;
+                document.getElementById('stat-reflections').textContent = data.reflections_count || 0;
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+                document.getElementById('connection-text').textContent = 'Disconnected';
+                document.querySelector('.connection-dot').style.background = 'var(--accent-red)';
+            }
+        }
+
+        async function loadQuadrantStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                const quadrants = data.quadrants || {};
+                const total = Object.values(quadrants).reduce((a, b) => a + b, 0);
+
+                // Get top 8 quadrants by count
+                const sortedQuadrants = Object.entries(quadrants)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 8);
+
+                const container = document.getElementById('quadrants-container');
+                if (sortedQuadrants.length === 0) {
+                    container.innerHTML = '<div class="empty-state" style="grid-column: span 2;"><div class="empty-subtext">No quadrants found</div></div>';
+                    return;
+                }
+
+                // Icon mapping for common quadrants
+                const iconMap = {
+                    'coding': '💻', 'personal': '👤', 'research': '🔬',
+                    'ai_instructions': '🤖', 'general': '📄',
+                    'high priority': '⚡', 'tasks': '✅', 'maintenance': '🔧'
+                };
+
+                // Color classes
+                const colors = ['coding', 'personal', 'research', 'ai'];
+
+                container.innerHTML = sortedQuadrants.map(([name, count], i) => {
+                    const icon = iconMap[name.toLowerCase()] || '📂';
+                    const colorClass = colors[i % colors.length];
+                    const percentage = total > 0 ? (count / total * 100) : 0;
+                    const safeName = name.replace(/[^a-zA-Z0-9]/g, '-');
+
+                    return `
+                        <div class="quadrant-card ${colorClass}" onclick="filterByQuadrant('${encodeURIComponent(name)}')" id="quadrant-${safeName}">
+                            <div class="quadrant-header">
+                                <span class="quadrant-name">${escapeHtml(name)}</span>
+                                <span class="quadrant-icon">${icon}</span>
+                            </div>
+                            <div class="quadrant-count">${count}</div>
+                            <div class="quadrant-bar">
+                                <div class="quadrant-fill" style="width: ${percentage}%"></div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                quadrantStats = Object.fromEntries(sortedQuadrants);
+            } catch (error) {
+                console.error('Failed to load quadrant stats:', error);
+            }
+        }
+
+        async function loadMemories() {
+            try {
+                let url = '/api/memories?limit=50';
+                if (currentFilter.quadrant) url += `&quadrant=${currentFilter.quadrant}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                memories = data.memories || [];
+                if (currentFilter.type !== 'all') memories = memories.filter(m => m.type === currentFilter.type);
+                renderMemories(memories);
+            } catch (error) {
+                console.error('Failed to load memories:', error);
+                document.getElementById('memory-list').innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div><div class="empty-text">Failed to load memories</div></div>';
+            }
+        }
+
+        function renderMemories(memoriesToRender) {
+            const container = document.getElementById('memory-list');
+            if (memoriesToRender.length === 0) {
+                container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">No memories found</div><div class="empty-subtext">Try adjusting your filters</div></div>';
+                return;
+            }
+            container.innerHTML = memoriesToRender.map(m => `
+                <div class="memory-card" onclick="showMemoryDetail('${m.id}')">
+                    <div class="memory-card-header">
+                        <div class="memory-title">${escapeHtml(m.summary)}</div>
+                        <span class="memory-type-badge ${m.type}">${m.type}</span>
+                    </div>
+                    <div class="memory-preview">${escapeHtml(m.content_preview)}</div>
+                    <div class="memory-meta">
+                        ${m.quadrants.map(q => `<span class="memory-quadrant ${q.replace('_', '-')}">${q}</span>`).join('')}
+                        ${m.tags.slice(0, 3).map(t => `<span class="memory-tag">${t}</span>`).join('')}
+                        ${m.tags.length > 3 ? `<span class="memory-tag">+${m.tags.length - 3}</span>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function filterByQuadrant(quadrant) {
+            if (currentFilter.quadrant === quadrant) {
+                currentFilter.quadrant = null;
+                document.querySelectorAll('.quadrant-card').forEach(c => c.classList.remove('active'));
+            } else {
+                currentFilter.quadrant = quadrant;
+                document.querySelectorAll('.quadrant-card').forEach(c => c.classList.remove('active'));
+                // Note: actual quadrant active class handled by ID or name matching
+            }
+            loadMemories();
+        }
+
+        function filterByType(type) {
+            currentFilter.type = type;
+            document.querySelectorAll('.filter-tag').forEach(tag => tag.classList.remove('active'));
+            event.target.classList.add('active');
+            if (type === 'all') renderMemories(memories);
+            else renderMemories(memories.filter(m => m.type === type));
+        }
+
+        async function performSearch() {
+            const rawQuery = document.getElementById('search-input').value.trim();
+            if (!rawQuery) { loadMemories(); return; }
+
+            // Check for tag: prefix
+            const tagMatch = rawQuery.match(/^tag:(.+)/i);
+            if (tagMatch) {
+                const tag = tagMatch[1].trim().toLowerCase();
+                const filtered = memories.filter(m =>
+                    m.tags && m.tags.some(t => t.toLowerCase().includes(tag))
+                );
+                renderMemories(filtered);
+                return;
+            }
+
+            // Semantic search via API
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: rawQuery, limit: 20, quadrant: currentFilter.quadrant })
+                });
+                const data = await response.json();
+                memories = data.memories || [];
+                renderMemories(memories);
+            } catch (error) {
+                console.error('Search failed:', error);
+            }
+        }
+
+        async function showMemoryDetail(id) {
+            try {
+                const response = await fetch(`/api/memories/${id}`);
+                const data = await response.json();
+                document.getElementById('modal-title').textContent = data.summary || 'Memory Detail';
+                document.getElementById('modal-body').innerHTML = `
+                    <div class="memory-detail-section">
+                        <div class="memory-detail-label">Type</div>
+                        <span class="memory-type-badge ${data.type}">${data.type}</span>
+                    </div>
+                    <div class="memory-detail-section">
+                        <div class="memory-detail-label">Quadrants</div>
+                        <div>${data.quadrants.map(q => `<span class="memory-quadrant ${q.replace('_', '-')}">${q}</span>`).join(' ')}</div>
+                    </div>
+                    <div class="memory-detail-section">
+                        <div class="memory-detail-label">Importance</div>
+                        <div>⭐ ${(data.importance * 100).toFixed(0)}%</div>
+                    </div>
+                    ${data.created_at ? `
+                    <div class="memory-detail-section">
+                        <div class="memory-detail-label">Created</div>
+                        <div>${new Date(data.created_at).toLocaleString()}</div>
+                    </div>` : ''}
+                    ${data.tags && data.tags.length > 0 ? `
+                    <div class="memory-detail-section">
+                        <div class="memory-detail-label">Tags</div>
+                        <div class="tag-cloud" style="margin-top: 0.5rem;">${data.tags.map(t => `<span class="tag-item">${t}</span>`).join('')}</div>
+                    </div>` : ''}
+                    ${data.source_uri ? `<div class="memory-detail-section"><div class="memory-detail-label">Source</div><div style="font-size: 0.875rem; color: var(--text-secondary);">${data.source_uri}</div></div>` : ''}
+                    <div class="memory-detail-section">
+                        <div class="memory-detail-label">Content</div>
+                        <div class="memory-detail-content">${escapeHtml(data.content)}</div>
+                    </div>
+                `;
+                document.getElementById('memory-modal').classList.add('active');
+            } catch (error) {
+                console.error('Failed to load memory detail:', error);
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('memory-modal').classList.remove('active');
+        }
+
+        async function loadQueueStatus() {
+            try {
+                const response = await fetch('/api/queue');
+                const data = await response.json();
+                const statusEl = document.getElementById('consolidation-status');
+                const detailEl = document.getElementById('consolidation-detail');
+                const progressEl = document.getElementById('queue-progress');
+                if (data.processing > 0) {
+                    statusEl.className = 'ai-status processing';
+                    detailEl.textContent = `${data.processing} processing, ${data.pending} pending`;
+                } else if (data.pending > 0) {
+                    statusEl.className = 'ai-status queued';
+                    detailEl.textContent = `${data.pending} jobs pending`;
+                } else {
+                    statusEl.className = 'ai-status idle';
+                    detailEl.textContent = 'Idle - up to date';
+                }
+                const total = data.pending + data.processing + data.completed;
+                const progress = total > 0 ? (data.completed / total * 100) : 100;
+                progressEl.style.width = `${progress}%`;
+            } catch (error) {
+                console.error('Failed to load queue status:', error);
+            }
+        }
+
+        async function loadActivity() {
+            try {
+                const response = await fetch('/api/activity?limit=10');
+                const data = await response.json();
+                const container = document.getElementById('activity-list');
+                const activities = data.activities || [];
+                if (activities.length === 0) {
+                    container.innerHTML = '<div class="empty-state" style="padding: 1rem;">No recent activity</div>';
+                    return;
+                }
+                const iconMap = {
+                    'completion': '🤖', 'embedding': '🔢', 'mem_save': '💾', 'mem_query': '🔍', 'fetch_detail': '📄', 'consolidate': '🔄'
+                };
+                container.innerHTML = activities.map(a => {
+                    const icon = iconMap[a.operation] || iconMap[a.tool] || '📌';
+                    const time = new Date(a.timestamp).toLocaleTimeString();
+                    let text = a.operation || a.tool || 'Unknown';
+                    let detail = a.status || '';
+
+                    return `<div class="activity-item">
+                        <div class="activity-icon query">${icon}</div>
+                        <div class="activity-content">
+                            <div class="activity-text">${escapeHtml(text)} <span style="color: var(--text-secondary);">• ${escapeHtml(detail)}</span></div>
+                            <div class="activity-time">${time}</div>
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch (error) {
+                console.error('Failed to load activity:', error);
+            }
+        }
+
+        async function loadTags() {
+            const allTags = new Map();
+            for (const m of memories) {
+                if (m.tags) {
+                    for (const tag of m.tags) {
+                        allTags.set(tag, (allTags.get(tag) || 0) + 1);
+                    }
+                }
+            }
+            const container = document.getElementById('tag-cloud');
+            if (allTags.size === 0) {
+                container.innerHTML = '<span style="color: var(--text-secondary);">No tags yet</span>';
+                return;
+            }
+            const sortedTags = Array.from(allTags.entries()).sort((a, b) => b[1] - a[1]).slice(0, 20);
+            container.innerHTML = sortedTags.map(([tag, count]) => `<span class="tag-item" onclick="searchByTag('${tag}')">${tag} (${count})</span>`).join('');
+        }
+
+        async function loadLogs() {
+            try {
+                const level = document.getElementById('log-level').value;
+                const response = await fetch(`/api/logs?lines=100&level=${level}`);
+                const data = await response.json();
+                const container = document.getElementById('log-list');
+                const logs = data.logs || [];
+
+                if (logs.length === 0) {
+                    container.innerHTML = '<div class="empty-state" style="padding: 1rem;"><div class="empty-subtext">No logs found</div></div>';
+                    return;
+                }
+
+                container.innerHTML = logs.map(l => {
+                    return `<div class="activity-item" style="font-family: monospace; font-size: 0.7rem; padding: 0.375rem;">
+                        <span style="font-weight: 600; min-width: 40px;">[${l.level.toUpperCase()}]</span>
+                        <span style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(l.message)}</span>
+                    </div>`;
+                }).join('');
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+            }
+        }
+
+        function searchByTag(tag) {
+            document.getElementById('search-input').value = `tag:${tag}`;
+            performSearch();
+        }
+
+        async function stopServer() {
+            if (!confirm('Are you sure you want to stop the MemCore server?')) return;
+            try {
+                const response = await fetch('/api/stop', { method: 'POST' });
+                const data = await response.json();
+                alert(data.message);
+            } catch (error) {
+                console.error('Failed to stop server:', error);
+            }
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

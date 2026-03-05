@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "Bash(do python:*)",
+      "Bash(curl:*)",
+      "WebFetch(domain:help.obsidian.md)",
+      "WebSearch",
+      "Bash(tasklist:*)"
     ]
   }
 }

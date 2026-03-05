@@ -1,7 +1,36 @@
 import litellm
 import os
+import json
+from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastembed import TextEmbedding
+
+
+def _log_activity(operation: str, model: str, tier: str, status: str = "success", error: str = None):
+    """Log LLM activity to the activity log file."""
+    try:
+        # Determine project root for log path
+        project_root = Path(__file__).parent.parent.parent.parent
+        log_dir = project_root / "dataCrystal" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "activity.jsonl"
+
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "operation": operation,
+            "model": model,
+            "tier": tier,
+            "status": status
+        }
+        if error:
+            entry["error"] = error
+
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        # Silently fail - logging shouldn't break the app
+        pass
 
 # Provider API key environment variable mapping
 PROVIDER_API_KEYS = {
@@ -55,6 +84,17 @@ class LLMInterface:
         self.catalogue = MODEL_CATALOGUE.get(self.provider, MODEL_CATALOGUE["bedrock"])
         self._local_embedder = None
         self._validate_api_key()
+        
+        # Eagerly initialize local embedder to avoid deadlocks in async tasks
+        embedding_model = os.getenv("EMBEDDING_MODEL", self.catalogue.get("embedding", f"local/{DEFAULT_EMBEDDING_MODEL}"))
+        if embedding_model.startswith("local/"):
+            print(f"[LLM] Pre-initializing local embedder: {embedding_model}", flush=True)
+            model_name = embedding_model.replace("local/", "")
+            try:
+                self._local_embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
+                print("[LLM] Local embedder initialized.", flush=True)
+            except Exception as e:
+                print(f"[LLM] Failed to initialize local embedder: {e}", flush=True)
 
     def _validate_api_key(self):
         """Validates that required API keys are set for the selected provider."""
@@ -75,12 +115,17 @@ class LLMInterface:
 
     async def completion(self, messages: List[Dict[str, str]], tier: str = "fast", **kwargs) -> str:
         model = self.get_model(tier)
-        response = await litellm.acompletion(
-            model=model,
-            messages=messages,
-            **kwargs
-        )
-        return response.choices[0].message.content
+        try:
+            response = await litellm.acompletion(
+                model=model,
+                messages=messages,
+                **kwargs
+            )
+            _log_activity("completion", model, tier, "success")
+            return response.choices[0].message.content
+        except Exception as e:
+            _log_activity("completion", model, tier, "error", str(e))
+            raise
 
     async def get_embedding(self, text: str) -> List[float]:
         embedding_model = os.getenv("EMBEDDING_MODEL", self.catalogue.get("embedding", f"local/{DEFAULT_EMBEDDING_MODEL}"))
@@ -90,10 +135,10 @@ class LLMInterface:
                 model_name = embedding_model.replace("local/", "")
                 # Initialize fastembed with the specified model
                 try:
-                    self._local_embedder = TextEmbedding(model_name=model_name)
+                    self._local_embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
                 except Exception:
                     # Fallback to default if model name not recognized
-                    self._local_embedder = TextEmbedding()
+                    self._local_embedder = TextEmbedding(providers=["CPUExecutionProvider"])
             
             # fastembed's embed() returns a generator of numpy arrays
             embeddings = list(self._local_embedder.embed([text]))
