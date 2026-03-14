@@ -263,10 +263,13 @@ class ConsolidationQueue:
             
             conn.commit()
     
-    def mark_failed(self, job_id: str, error_message: str):
+    def mark_failed(self, job_id: str, error_message: str) -> JobStatus:
         """
         Mark a job as failed.
         If retry count < max_retries, will be retried on next dequeue.
+        
+        Returns:
+            The new JobStatus (RETRYING or FAILED)
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -301,7 +304,10 @@ class ConsolidationQueue:
                     VALUES (?, ?, ?)
                 """, (job_id, new_status, f"Failed: {error_message[:200]}"))
             
-            conn.commit()
+                conn.commit()
+                return new_status
+            
+            return JobStatus.FAILED
     
     def reset_processing_jobs(self):
         """

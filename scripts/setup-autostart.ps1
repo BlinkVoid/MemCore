@@ -9,7 +9,9 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     exit 1
 }
 
-$scriptPath = "E:\workspace\MemCore\start-memcore.ps1"
+# Get the directory where this script is located
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptPath = Join-Path (Split-Path -Parent $scriptDir) "start-memcore.ps1"
 $taskName = "MemCore"
 
 # Create the action

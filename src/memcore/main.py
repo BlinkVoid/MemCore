@@ -25,6 +25,7 @@ from src.memcore.storage.queue import ConsolidationQueue
 from src.memcore.gatekeeper.router import GatekeeperRouter
 from src.memcore.memory.tiered import TieredContextManager
 from src.memcore.memory.consolidation import MemoryConsolidator
+from src.memcore.agent.consolidation_agent import ConsolidationManager
 from src.memcore.memory.feedback_optimizer import FeedbackOptimizer
 from src.memcore.memory.advanced_search import AdvancedSearch, SearchFilters
 from src.memcore.utils.watcher import DocumentWatcher
@@ -75,6 +76,7 @@ class MemCoreServer:
         self.consolidator = MemoryConsolidator(
             self.llm, self.vector_store, self.graph_store, self.consolidation_queue
         )
+        self.consolidation_manager = ConsolidationManager(self.consolidator, self.llm)
         self.task_manager = TaskManager(DATA_DIR, self.vector_store)
         self.reminder_scheduler = ReminderScheduler(self.task_manager, self.llm)
         
@@ -118,6 +120,10 @@ class MemCoreServer:
             }
             self.vector_store.upsert_memory(mem_id, vector, payload)
             self.graph_store.add_node(mem_id, "memory", {"summary": summary, "type": "raw"})
+            
+            # Asynchronously trigger the Strand Agent to evaluate the system
+            asyncio.create_task(self.consolidation_manager.evaluate_environment())
+            
             return f"Stored memory {mem_id}"
 
         @self.mcp.tool()
@@ -128,26 +134,14 @@ class MemCoreServer:
 
     def _setup_scheduler(self):
         """Configure background recurring jobs."""
-        self.scheduler.add_job(self.process_queue, 'interval', minutes=30)
-        self.scheduler.add_job(self.consolidate_cycle, 'interval', hours=8)
+        # Gentle fallback tickler to ensure the agent evaluates occasionally
+        # even if no mem_save events occurred recently
+        self.scheduler.add_job(self.consolidation_manager.evaluate_environment, 'interval', minutes=30)
 
     async def reindex_file(self, path: str):
         """Re-index a single file from the watcher."""
         ingester = ObsidianIngester(os.path.dirname(path), self.llm, self.vector_store, self.graph_store)
         await ingester._process_file(path, force_rescan=True)
-
-    async def process_queue(self):
-        """Background job: Process consolidation queue."""
-        if self.consolidation_queue.get_pending_count() > 0:
-            logger.info("Processing consolidation queue...")
-            await self.consolidator.process_queue_with_synthesis()
-
-    async def consolidate_cycle(self):
-        """Background job: Promote STM to LTM."""
-        raw = self.vector_store.get_raw_memories(limit=50)
-        if raw:
-            logger.info(f"Consolidating {len(raw)} raw memories...")
-            await self.consolidator.consolidate([r.payload for r in raw], use_queue=True)
 
     async def run(self, host: str = "127.0.0.1", port: int = 8080):
         """Start the unified server."""

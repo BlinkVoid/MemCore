@@ -3,8 +3,8 @@
 **Date:** 2026-03-02
 **Status:** Design Complete
 
-Memcore serves as the **L2 Persistent Memory** layer for HIVE (the agent swarm framework at
-`E:/workspace/HIVE`). This document describes the integration contract between the two systems.
+Memcore serves as the **L2 Persistent Memory** layer for HIVE (an agent swarm orchestration framework).
+This document describes the integration contract between the two systems.
 
 ---
 
@@ -212,7 +212,7 @@ HIVE connects to Memcore via its SSE transport. Start Memcore before starting th
 
 ```bash
 # Start Memcore SSE server
-cd E:/workspace/memcore
+cd /path/to/memcore
 uv run src/memcore/main.py --mode sse
 # Running at http://127.0.0.1:8080/sse
 ```
@@ -287,8 +287,6 @@ HIVE executions can generate large volumes of LTM entries over time. Consider:
 
 ## Related Documents
 
-- HIVE Full Architecture: `E:/workspace/HIVE/docs/FULL_ARCHITECTURE.md`
-- HIVE Design Rationale: `E:/workspace/HIVE/docs/DESIGN_CONVERSATION.md`
-- Memcore Core Concepts: `E:/workspace/memcore/docs/core-concepts.md`
-- Memcore API Specification: `E:/workspace/memcore/docs/api-specification.md`
-- Memcore Architecture: `E:/workspace/memcore/docs/research-memcore-architecture.md`
+- Memcore Core Concepts: [core-concepts.md](./core-concepts.md)
+- Memcore API Specification: [api-specification.md](./api-specification.md)
+- Memcore Architecture: [research-memcore-architecture.md](./research-memcore-architecture.md)

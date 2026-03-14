@@ -71,6 +71,17 @@ class MemoryConsolidator:
             })
         
         job_ids = self.queue.enqueue_batch(memories_for_queue)
+        
+        # Update original Qdrant memory type to 'queued_raw' to prevent re-fetching
+        try:
+            for mem_dict in memories_for_queue:
+                self.vector_store.update_memory(
+                    mem_dict["memory_id"],
+                    {"type": "queued_raw"}
+                )
+        except Exception as e:
+            print(f"[Consolidator] Failed to mark memories as queued_raw: {e}")
+            
         print(f"[Consolidator] Queued {len(job_ids)} memories for consolidation")
         return job_ids
     
@@ -106,7 +117,18 @@ class MemoryConsolidator:
                 
             except Exception as e:
                 error_msg = str(e)
-                self.queue.mark_failed(job["id"], error_msg)
+                new_status = self.queue.mark_failed(job["id"], error_msg)
+                
+                if new_status == JobStatus.FAILED:
+                    # Exhausted retries, move out of processing pipeline completely
+                    try:
+                        self.vector_store.update_memory(
+                            job["memory_id"],
+                            {"type": "failed_raw"}
+                        )
+                    except Exception as ve:
+                        print(f"[Consolidator] Failed to mark as failed_raw: {ve}")
+
                 results["failed"] += 1
                 results["errors"].append({
                     "job_id": job["id"],
@@ -186,7 +208,17 @@ class MemoryConsolidator:
 
             except Exception as e:
                 error_msg = str(e)
-                self.queue.mark_failed(job["id"], error_msg)
+                new_status = self.queue.mark_failed(job["id"], error_msg)
+                
+                if new_status == JobStatus.FAILED:
+                    try:
+                        self.vector_store.update_memory(
+                            job["memory_id"],
+                            {"type": "failed_raw"}
+                        )
+                    except Exception as ve:
+                        print(f"[Consolidator] Failed to mark as failed_raw: {ve}")
+                        
                 results["failed"] += 1
                 results["errors"].append({
                     "job_id": job["id"],
