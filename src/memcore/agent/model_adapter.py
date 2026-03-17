@@ -32,10 +32,9 @@ class MemCoreStrandModel(LiteLLMModel):
         logger.info("MemCoreStrandModel initializing with model_id=%s, tier=%s", model_id, tier)
 
         # Initialize the parent LiteLLMModel with the resolved model name.
-        # stream=False for non-streaming (simpler, sufficient for internal agent).
+        # Must use stream=True (default) — DeepSeek rejects stream_options when stream=False.
         super().__init__(
             model_id=model_id,
-            params={"stream": False},
         )
 
     # --- Override stream to add activity logging ---
