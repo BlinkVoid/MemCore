@@ -171,6 +171,55 @@ class MemCoreServer:
                 "queue": self.consolidation_queue.get_pending_count()
             })
 
+        @app.route("/api/run-consolidation", methods=["POST"])
+        async def run_consolidation(request):
+            """Directly run consolidation pipeline, bypassing the Strands agent.
+
+            Useful for batch processing with CLI providers (cli/kimi, cli/claude)
+            that don't support the Strands streaming protocol.
+
+            Query params:
+                batch_size: Number of jobs to process per batch (default: 5)
+                queue_first: If true, queue raw memories before processing (default: true)
+                reset_stale: If true, reset stuck 'processing' jobs to 'pending' first (default: false)
+            """
+            try:
+                batch_size = int(request.query_params.get("batch_size", 5))
+                queue_first = request.query_params.get("queue_first", "true").lower() == "true"
+                reset_stale = request.query_params.get("reset_stale", "false").lower() == "true"
+
+                results = {"queued": 0, "processed": None, "reset": 0}
+
+                if reset_stale:
+                    reset_count = self.consolidator.recover_from_crash()
+                    results["reset"] = reset_count
+                    logger.info(f"Reset {reset_count} stale processing jobs to pending")
+
+                if queue_first:
+                    raw = self.vector_store.get_raw_memories(limit=100)
+                    if raw:
+                        mem_dicts = [{
+                            "id": r.id,
+                            "content": r.payload.get("content", ""),
+                            "summary": r.payload.get("summary", ""),
+                            "quadrants": r.payload.get("quadrants", ["general"]),
+                            "source_uri": r.payload.get("source_uri"),
+                            "importance": r.payload.get("importance", 0.5)
+                        } for r in raw]
+                        job_ids = await self.consolidator.queue_raw_memories(mem_dicts)
+                        results["queued"] = len(job_ids)
+
+                pending = self.consolidation_queue.get_pending_count()
+                if pending > 0:
+                    proc_results = await self.consolidator.process_queue_with_synthesis(batch_size=batch_size)
+                    results["processed"] = proc_results
+
+                results["queue_after"] = self.consolidation_queue.get_stats()
+                return JSONResponse({"success": True, **results})
+            except Exception as e:
+                logger.error(f"Direct consolidation failed: {e}", exc_info=True)
+                return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
         # Run with Uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
         server = uvicorn.Server(config)

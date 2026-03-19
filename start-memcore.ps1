@@ -23,6 +23,11 @@
 .PARAMETER LogFile
     Path to the log file (default: dataCrystal/logs/memcore.log).
 
+.PARAMETER CliProvider
+    Use a subscription-based CLI tool as the strong-tier LLM instead of API.
+    Supported values: "kimi", "claude". This routes consolidation calls through
+    the CLI tool (zero API cost) while keeping the fast tier on the configured API provider.
+
 .PARAMETER Help
     Show this help message.
 
@@ -42,6 +47,10 @@
     .\start-memcore.ps1 -Background -LogFile "C:\logs\memcore.log"
     # Run in background with custom log location
 
+.EXAMPLE
+    .\start-memcore.ps1 -CliProvider kimi
+    # Use Kimi CLI subscription for consolidation (no API cost)
+
 .NOTES
     Requires: PowerShell 5.1+ and uv
     MemCore will continue running until manually stopped.
@@ -59,6 +68,9 @@ param(
     
     [string]$LogFile = "",
     
+    [ValidateSet("kimi", "claude", "")]
+    [string]$CliProvider = "",
+
     [switch]$Help
 )
 
@@ -192,6 +204,12 @@ $mainScript = Join-Path $ProjectRoot "src\memcore\main.py"
 
 # Set PYTHONPATH for imports
 $env:PYTHONPATH = $ProjectRoot
+
+# Set CLI provider for strong tier if specified
+if ($CliProvider) {
+    $env:LLM_MODEL_STRONG = "cli/$CliProvider"
+    Write-Host "   CLI Provider: $CliProvider (strong tier via subscription)" -ForegroundColor Magenta
+}
 
 # Check if virtual environment exists
 if (-not (Test-Path $pythonExe)) {

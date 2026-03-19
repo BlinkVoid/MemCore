@@ -7,7 +7,14 @@
       "Bash(curl:*)",
       "WebFetch(domain:help.obsidian.md)",
       "WebSearch",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(find:*)",
+      "Bash(sqlite3:*)",
+      "Bash(powershell -Command \"Get-Process -Name python* | Stop-Process -Force\")",
+      "Bash(kimi:*)",
+      "Bash(PYTHONPATH=. uv run python -c \":*)",
+      "Bash(LLM_MODEL_STRONG=cli/kimi PYTHONPATH=. uv run python -c \":*)",
+      "Bash(git add:*)"
     ]
   }
 }

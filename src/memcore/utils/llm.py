@@ -1,10 +1,16 @@
+import asyncio
 import litellm
+import logging
 import os
 import json
+import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastembed import TextEmbedding
+
+logger = logging.getLogger(__name__)
 
 
 def _log_activity(operation: str, model: str, tier: str, status: str = "success", error: str = None):
@@ -91,7 +97,9 @@ class LLMInterface:
             print(f"[LLM] Pre-initializing local embedder: {embedding_model}", flush=True)
             model_name = embedding_model.replace("local/", "")
             try:
-                self._local_embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*mean pooling instead of CLS.*")
+                    self._local_embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
                 print("[LLM] Local embedder initialized.", flush=True)
             except Exception as e:
                 print(f"[LLM] Failed to initialize local embedder: {e}", flush=True)
@@ -115,6 +123,11 @@ class LLMInterface:
 
     async def completion(self, messages: List[Dict[str, str]], tier: str = "fast", **kwargs) -> str:
         model = self.get_model(tier)
+
+        # Route to CLI backend if model starts with "cli/"
+        if model.startswith("cli/"):
+            return await self._cli_completion(model, messages, tier, **kwargs)
+
         try:
             response = await litellm.acompletion(
                 model=model,
@@ -127,6 +140,75 @@ class LLMInterface:
             _log_activity("completion", model, tier, "error", str(e))
             raise
 
+    async def _cli_completion(self, model: str, messages: List[Dict[str, str]], tier: str, **kwargs) -> str:
+        """Route completion through a CLI tool (claude, kimi) using subscription instead of API.
+
+        Model format: cli/<tool>  e.g. cli/claude, cli/kimi
+        """
+        cli_tool = model.replace("cli/", "")
+
+        if not shutil.which(cli_tool):
+            raise RuntimeError(f"CLI tool '{cli_tool}' not found on PATH")
+
+        # Flatten messages into a single prompt
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                prompt_parts.append(f"[System Instructions]\n{content}\n")
+            else:
+                prompt_parts.append(content)
+
+        prompt = "\n\n".join(prompt_parts)
+
+        # If JSON output was requested, add explicit instruction
+        if kwargs.get("response_format", {}).get("type") == "json_object":
+            prompt += "\n\nIMPORTANT: Respond with valid JSON only. No markdown fences, no explanation."
+
+        # Build CLI command
+        if cli_tool == "claude":
+            cmd = ["claude", "-p", prompt, "--allowedTools", "", "--output-format", "text"]
+        elif cli_tool == "kimi":
+            cmd = ["kimi", "--print", "--final-message-only", "-p", prompt]
+        else:
+            raise ValueError(f"Unsupported CLI tool: {cli_tool}. Use 'claude' or 'kimi'.")
+
+        logger.info("CLI completion via %s (tier=%s, prompt_len=%d)", cli_tool, tier, len(prompt))
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            response = stdout.decode("utf-8", errors="replace").strip()
+
+            if proc.returncode != 0:
+                err_msg = stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"{cli_tool} exited with code {proc.returncode}: {err_msg}")
+
+            if not response:
+                raise RuntimeError(f"{cli_tool} returned empty response")
+
+            # Strip markdown JSON fences if present
+            if response.startswith("```json"):
+                response = response.removeprefix("```json").removesuffix("```").strip()
+            elif response.startswith("```"):
+                response = response.removeprefix("```").removesuffix("```").strip()
+
+            _log_activity("cli_completion", cli_tool, tier, "success")
+            return response
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            _log_activity("cli_completion", cli_tool, tier, "error", "timeout after 120s")
+            raise RuntimeError(f"{cli_tool} timed out after 120 seconds")
+        except Exception as e:
+            _log_activity("cli_completion", cli_tool, tier, "error", str(e))
+            raise
+
     async def get_embedding(self, text: str) -> List[float]:
         embedding_model = os.getenv("EMBEDDING_MODEL", self.catalogue.get("embedding", f"local/{DEFAULT_EMBEDDING_MODEL}"))
         
@@ -134,11 +216,13 @@ class LLMInterface:
             if self._local_embedder is None:
                 model_name = embedding_model.replace("local/", "")
                 # Initialize fastembed with the specified model
-                try:
-                    self._local_embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
-                except Exception:
-                    # Fallback to default if model name not recognized
-                    self._local_embedder = TextEmbedding(providers=["CPUExecutionProvider"])
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*mean pooling instead of CLS.*")
+                    try:
+                        self._local_embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
+                    except Exception:
+                        # Fallback to default if model name not recognized
+                        self._local_embedder = TextEmbedding(providers=["CPUExecutionProvider"])
             
             # fastembed's embed() returns a generator of numpy arrays
             embeddings = list(self._local_embedder.embed([text]))

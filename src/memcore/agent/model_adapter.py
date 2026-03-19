@@ -10,6 +10,23 @@ from src.memcore.utils.llm import LLMInterface, _log_activity
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_deepseek_messages(messages: list, model_id: str) -> list:
+    """Ensure DeepSeek reasoning models have `reasoning_content` in all assistant messages.
+
+    DeepSeek-reasoner requires every assistant message in the conversation history
+    to include a `reasoning_content` field. The Strands SDK does not add this
+    automatically, causing 'Missing reasoning_content field' errors during
+    multi-turn tool-calling conversations.
+    """
+    if "deepseek-reasoner" not in model_id:
+        return messages
+
+    for msg in messages:
+        if msg.get("role") == "assistant" and "reasoning_content" not in msg:
+            msg["reasoning_content"] = ""
+    return messages
+
+
 class MemCoreStrandModel(LiteLLMModel):
     """Adapter bridging MemCore's LLMInterface with the Strands SDK's LiteLLMModel.
 
@@ -54,6 +71,9 @@ class MemCoreStrandModel(LiteLLMModel):
         if current_config.get("model_id") != model_name:
             self.update_config(model_id=model_name)
 
+        # Sanitize messages for DeepSeek reasoning models
+        messages = _sanitize_deepseek_messages(messages, model_name)
+
         try:
             async for event in super().stream(
                 messages,
@@ -64,5 +84,6 @@ class MemCoreStrandModel(LiteLLMModel):
                 yield event
             _log_activity("strand_agent_stream", model_name, self.tier, "success")
         except Exception as e:
+            logger.error("strand_agent_stream failed: %s", e, exc_info=True)
             _log_activity("strand_agent_stream", model_name, self.tier, "error", str(e))
             raise
