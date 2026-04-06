@@ -14,7 +14,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-from src.memcore.utils.llm import LLMInterface, MODEL_CATALOGUE, PROVIDER_API_KEYS
+from src.memcore.utils.llm import (
+    LLMInterface, MODEL_CATALOGUE, PROVIDER_API_KEYS,
+    detect_cli_tool, detect_best_provider, CLI_TOOL_PREFERENCE
+)
 
 
 def check_env_variables():
@@ -22,9 +25,27 @@ def check_env_variables():
     print("=" * 50)
     print("MemCore Configuration Check")
     print("=" * 50)
-    
-    provider = os.getenv("LLM_PROVIDER", "bedrock")
-    print(f"\n📋 Selected Provider: {provider}")
+
+    raw_provider = os.getenv("LLM_PROVIDER", "auto")
+
+    if raw_provider == "auto":
+        resolved = detect_best_provider()
+        print(f"\n📋 Provider: auto → resolved to: {resolved}")
+        if resolved == "cli":
+            cli_tool = detect_cli_tool()
+            print(f"   CLI Tool: {cli_tool}")
+        provider = resolved
+    elif raw_provider == "cli":
+        cli_tool = detect_cli_tool()
+        if cli_tool:
+            print(f"\n📋 Provider: cli (tool: {cli_tool})")
+        else:
+            print(f"\n📋 Provider: cli — ⚠️  NO CLI TOOL FOUND on PATH")
+            print(f"   Checked: {', '.join(CLI_TOOL_PREFERENCE)}")
+        provider = raw_provider
+    else:
+        provider = raw_provider
+        print(f"\n📋 Selected Provider: {provider}")
     
     # Show embedding strategy
     from src.memcore.utils.llm import MODEL_CATALOGUE, DEFAULT_EMBEDDING_MODEL

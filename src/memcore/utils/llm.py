@@ -45,6 +45,7 @@ PROVIDER_API_KEYS = {
     "kimi": ["MOONSHOT_API_KEY"],
     "deepseek": ["DEEPSEEK_API_KEY"],
     "ollama": [],  # No API key needed for local LLM
+    "cli": [],     # No API key needed — uses installed CLI tool
 }
 
 # Default embedding model for all providers
@@ -52,6 +53,12 @@ PROVIDER_API_KEYS = {
 # DEFAULT: intfloat/multilingual-e5-large - Multilingual, supports 100+ languages including Chinese
 # Alternative: BAAI/bge-base-en-v1.5 (768-dim, 210MB) - English-only, smaller
 DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-large"  # 1024-dim, 2.24GB, multilingual
+
+# CLI tools checked in preference order for auto-detection
+CLI_TOOL_PREFERENCE = ["claude", "kimi", "gemini"]
+
+# API providers checked in preference order when no CLI is available
+API_PROVIDER_PREFERENCE = ["deepseek", "kimi", "gemini", "bedrock"]
 
 MODEL_CATALOGUE = {
     "bedrock": {
@@ -81,16 +88,84 @@ MODEL_CATALOGUE = {
         "fast": "ollama/qwen2.5:7b",  # Fast, good for routing
         "strong": "ollama/qwen2.5:14b",  # Better for consolidation
         "embedding": f"local/{DEFAULT_EMBEDDING_MODEL}"  # Still use local embeddings
-    }
+    },
+    # cli provider: fast and strong are set dynamically based on detected/configured CLI_TOOL
+    "cli": {
+        "fast": None,   # resolved at init from CLI_TOOL env var or auto-detection
+        "strong": None,
+        "embedding": f"local/{DEFAULT_EMBEDDING_MODEL}"
+    },
 }
+
+
+def detect_cli_tool() -> Optional[str]:
+    """Return the CLI tool to use as LLM backend.
+
+    Checks CLI_TOOL env var first, then scans PATH in preference order.
+    Returns None if no CLI tool is found.
+    """
+    explicit = os.getenv("CLI_TOOL", "").strip()
+    if explicit:
+        if shutil.which(explicit):
+            return explicit
+        raise ValueError(
+            f"CLI_TOOL='{explicit}' is set but '{explicit}' was not found on PATH. "
+            f"Install it or unset CLI_TOOL to use auto-detection."
+        )
+    for tool in CLI_TOOL_PREFERENCE:
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def detect_best_provider() -> str:
+    """Detect the best available LLM provider.
+
+    Priority: CLI tools (subscription, no cost) > API providers (key required) > ollama.
+    Used when LLM_PROVIDER=auto (the default).
+    """
+    cli_tool = detect_cli_tool()
+    if cli_tool:
+        return "cli"
+
+    for provider in API_PROVIDER_PREFERENCE:
+        keys = PROVIDER_API_KEYS.get(provider, [])
+        if all(os.getenv(k) for k in keys):
+            return provider
+
+    # ollama needs no key
+    return "ollama"
 
 class LLMInterface:
     def __init__(self, provider: Optional[str] = None):
-        self.provider = provider or os.getenv("LLM_PROVIDER", "bedrock")
-        self.catalogue = MODEL_CATALOGUE.get(self.provider, MODEL_CATALOGUE["bedrock"])
+        raw_provider = provider or os.getenv("LLM_PROVIDER", "auto")
+
+        # Resolve 'auto' to the best available provider
+        if raw_provider == "auto":
+            raw_provider = detect_best_provider()
+            print(f"[LLM] Auto-detected provider: {raw_provider}", flush=True)
+
+        # Resolve 'cli' provider: detect or validate CLI tool
+        if raw_provider == "cli":
+            self._cli_tool = detect_cli_tool()
+            if not self._cli_tool:
+                raise RuntimeError(
+                    "LLM_PROVIDER=cli but no CLI tool found on PATH. "
+                    f"Install one of: {CLI_TOOL_PREFERENCE} or set CLI_TOOL=<tool>."
+                )
+            # Patch catalogue so fast/strong resolve to the detected tool
+            self.catalogue = dict(MODEL_CATALOGUE["cli"])
+            self.catalogue["fast"] = f"cli/{self._cli_tool}"
+            self.catalogue["strong"] = f"cli/{self._cli_tool}"
+            print(f"[LLM] CLI backend selected: {self._cli_tool}", flush=True)
+        else:
+            self._cli_tool = None
+            self.catalogue = MODEL_CATALOGUE.get(raw_provider, MODEL_CATALOGUE["deepseek"])
+
+        self.provider = raw_provider
         self._local_embedder = None
         self._validate_api_key()
-        
+
         # Eagerly initialize local embedder to avoid deadlocks in async tasks
         embedding_model = os.getenv("EMBEDDING_MODEL", self.catalogue.get("embedding", f"local/{DEFAULT_EMBEDDING_MODEL}"))
         if embedding_model.startswith("local/"):
@@ -119,7 +194,10 @@ class LLMInterface:
         env_override = os.getenv(f"LLM_MODEL_{tier.upper()}")
         if env_override:
             return env_override
-        return self.catalogue.get(tier, self.catalogue["fast"])
+        model = self.catalogue.get(tier) or self.catalogue.get("fast")
+        if model is None and self._cli_tool:
+            model = f"cli/{self._cli_tool}"
+        return model
 
     async def completion(self, messages: List[Dict[str, str]], tier: str = "fast", **kwargs) -> str:
         model = self.get_model(tier)
@@ -170,9 +248,25 @@ class LLMInterface:
         if cli_tool == "claude":
             cmd = ["claude", "-p", prompt, "--allowedTools", "", "--output-format", "text"]
         elif cli_tool == "kimi":
-            cmd = ["kimi", "--print", "--final-message-only", "-p", prompt]
+            cmd = [
+                "kimi",
+                "--print",
+                "--final-message-only",
+                "--output-format",
+                "text",
+                "--max-steps-per-turn",
+                "1",
+                "--max-ralph-iterations",
+                "0",
+                "-p",
+                prompt,
+            ]
+        elif cli_tool == "gemini":
+            cmd = ["gemini", "-p", prompt]
         else:
-            raise ValueError(f"Unsupported CLI tool: {cli_tool}. Use 'claude' or 'kimi'.")
+            # Generic fallback: try `<tool> -p <prompt>` and hope for the best
+            logger.warning("Unknown CLI tool '%s', attempting generic invocation", cli_tool)
+            cmd = [cli_tool, "-p", prompt]
 
         logger.info("CLI completion via %s (tier=%s, prompt_len=%d)", cli_tool, tier, len(prompt))
 

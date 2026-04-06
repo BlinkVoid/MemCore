@@ -14,7 +14,9 @@
       "Bash(kimi:*)",
       "Bash(PYTHONPATH=. uv run python -c \":*)",
       "Bash(LLM_MODEL_STRONG=cli/kimi PYTHONPATH=. uv run python -c \":*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(du -sh dataCrystal/*)",
+      "Bash(python3:*)"
     ]
   }
 }

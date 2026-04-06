@@ -2,6 +2,11 @@
 
 **Tiered memory for AI agents. Remember what matters, forget what doesn't.**
 
+## TODO
+
+- [ ] **Rewrite in Rust** — migrate from Python/uv to a Rust-based implementation for performance and lower overhead. Current architecture (Qdrant + SQLite + scheduler) should map cleanly. Hold until current Python version is tested and behaviour is validated on Linux.
+- [ ] **Decouple from MCP** — evaluate replacing MCP server interface with a skill-based or CLI-with-instructions approach to reduce context overhead and improve response latency.
+
 <!-- INSERT: hero-banner.png -->
 <!-- Alt text: Dark-themed banner showing "MemCore" in clean sans-serif type with a stylized brain/circuit motif. Tagline reads "Tiered Memory for AI Agents". Subtle gradient from deep navy to black. -->
 
@@ -9,6 +14,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP Native](https://img.shields.io/badge/MCP-native-8A2BE2)](https://modelcontextprotocol.io)
 [![GitHub stars](https://img.shields.io/github/stars/BlinkVoid/MemCore?style=social)](https://github.com/BlinkVoid/MemCore)
+
+> **⭐ If MemCore saves you tokens, please consider starring the repo — it helps more builders find it.**
+[![PromptCore: reasoning framework selector](https://img.shields.io/badge/PromptCore-reasoning%20framework%20selector-blue)](https://github.com/BlinkVoid/PromptCore)
+[![Multipass: secure desktop LLM workspace](https://img.shields.io/badge/Multipass-secure%20desktop%20LLM%20workspace-green)](https://github.com/BlinkVoid/multipass)
 
 ---
 
@@ -79,6 +88,13 @@ Three tokens at L0. Fifty at L1. Full detail only on demand. The agent controls 
 | **MCP Native** | Built as an MCP server; integrates with any MCP-compatible client out of the box |
 | **Multilingual** | Supports 100+ languages via multilingual-e5-large embeddings |
 | **Dashboard** | Built-in analytics UI for monitoring memory health and retrieval quality |
+
+---
+
+## Related Projects
+
+- **[PromptCore](https://github.com/BlinkVoid/PromptCore)** — reasoning framework selector. Automatically picks the best reasoning strategy for your task.
+- **[Multipass](https://github.com/BlinkVoid/multipass)** — secure desktop LLM workspace. Run local and remote models in a sandboxed desktop environment.
 
 ---
 
@@ -277,6 +293,14 @@ For bug reports and feature requests, open an issue on GitHub.
 
 ---
 
+## Related Projects
+
+- **[PromptCore](https://github.com/BlinkVoid/PromptCore)** — Auto-selects the optimal reasoning framework from 40 peer-reviewed strategies
+- **[multipass](https://github.com/BlinkVoid/multipass)** — Desktop clipboard & chat workspace with prompt-security boundaries
+- **[BlinkVoid MCP Toolkit](https://github.com/BlinkVoid/BlinkVoid-MCP-Toolkit)** — Overview of all MCP-native tools
+
+---
+
 ## License
 
 [MIT](LICENSE) -- use it however you want.
@@ -284,3 +308,9 @@ For bug reports and feature requests, open an issue on GitHub.
 ---
 
 Built by [BlinkVoid](https://github.com/BlinkVoid). If MemCore is useful to you, a star on the repo helps others find it.
+
+---
+
+## Community
+
+If MemCore saves you tokens, consider starring the repo and sharing your setup.

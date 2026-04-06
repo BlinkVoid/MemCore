@@ -171,6 +171,23 @@ class MemCoreServer:
                 "queue": self.consolidation_queue.get_pending_count()
             })
 
+        @app.route("/api/type-counts")
+        async def type_counts(request):
+            """Count memories by type using Qdrant's count API."""
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            counts = {}
+            for t in ["raw", "queued_raw", "archived_raw", "consolidated", "reflection", "obsidian", "failed_raw"]:
+                c = self.vector_store.client.count(
+                    collection_name=self.vector_store.collection_name,
+                    count_filter=Filter(must=[FieldCondition(key="type", match=MatchValue(value=t))])
+                ).count
+                if c > 0:
+                    counts[t] = c
+            total = self.vector_store.client.get_collection(self.vector_store.collection_name).points_count
+            counts["_total"] = total
+            counts["_untyped"] = total - sum(v for k, v in counts.items() if not k.startswith("_"))
+            return JSONResponse(counts)
+
         @app.route("/api/run-consolidation", methods=["POST"])
         async def run_consolidation(request):
             """Directly run consolidation pipeline, bypassing the Strands agent.
@@ -218,6 +235,45 @@ class MemCoreServer:
                 return JSONResponse({"success": True, **results})
             except Exception as e:
                 logger.error(f"Direct consolidation failed: {e}", exc_info=True)
+                return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+        @app.route("/api/purge-queue", methods=["POST"])
+        async def purge_queue(request):
+            """Purge all pending jobs and reset their Qdrant type back to 'raw'.
+
+            Use this to clean up a bloated queue before re-queueing fresh.
+            Query params:
+                reset_qdrant: If true, also reset 'queued_raw' memories back to 'raw' (default: true)
+            """
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            try:
+                purged = self.consolidation_queue.purge_pending()
+                reset_qdrant = request.query_params.get("reset_qdrant", "true").lower() == "true"
+                qdrant_reset = 0
+
+                if reset_qdrant:
+                    # Find all queued_raw memories and reset them to raw
+                    results, _ = self.vector_store.client.scroll(
+                        collection_name=self.vector_store.collection_name,
+                        scroll_filter=Filter(must=[
+                            FieldCondition(key="type", match=MatchValue(value="queued_raw"))
+                        ]),
+                        limit=10000,
+                        with_payload=False
+                    )
+                    if results:
+                        point_ids = [r.id for r in results]
+                        self.vector_store.client.set_payload(
+                            collection_name=self.vector_store.collection_name,
+                            payload={"type": "raw"},
+                            points=point_ids
+                        )
+                        qdrant_reset = len(point_ids)
+
+                logger.info(f"Purged {purged} pending jobs, reset {qdrant_reset} queued_raw memories to raw")
+                return JSONResponse({"success": True, "purged": purged, "qdrant_reset": qdrant_reset})
+            except Exception as e:
+                logger.error(f"Purge failed: {e}", exc_info=True)
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
         # Run with Uvicorn

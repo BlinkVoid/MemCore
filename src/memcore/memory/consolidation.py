@@ -73,14 +73,14 @@ class MemoryConsolidator:
         job_ids = self.queue.enqueue_batch(memories_for_queue)
         
         # Update original Qdrant memory type to 'queued_raw' to prevent re-fetching
-        try:
-            for mem_dict in memories_for_queue:
+        for mem_dict in memories_for_queue:
+            try:
                 self.vector_store.update_memory(
                     mem_dict["memory_id"],
                     {"type": "queued_raw"}
                 )
-        except Exception as e:
-            print(f"[Consolidator] Failed to mark memories as queued_raw: {e}")
+            except Exception as e:
+                print(f"[Consolidator] Failed to mark {mem_dict['memory_id']} as queued_raw: {e}")
             
         print(f"[Consolidator] Queued {len(job_ids)} memories for consolidation")
         return job_ids

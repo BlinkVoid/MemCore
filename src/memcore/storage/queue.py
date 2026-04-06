@@ -161,10 +161,10 @@ class ConsolidationQueue:
             for mem in memories:
                 memory_id = mem["memory_id"]
                 
-                # Skip if already in queue
+                # Skip if already in queue or previously completed
                 cursor.execute("""
-                    SELECT id FROM consolidation_jobs 
-                    WHERE memory_id = ? AND status IN ('pending', 'processing', 'retrying')
+                    SELECT id FROM consolidation_jobs
+                    WHERE memory_id = ? AND status IN ('pending', 'processing', 'retrying', 'completed')
                 """, (memory_id,))
                 if cursor.fetchone():
                     continue
@@ -467,6 +467,15 @@ class ConsolidationQueue:
             conn.commit()
             return deleted
     
+    def purge_pending(self) -> int:
+        """Remove all pending jobs from the queue. Returns number of jobs removed."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM consolidation_jobs WHERE status = 'pending'")
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+
     def _get_active_job_by_memory_id(self, memory_id: str) -> Optional[Dict[str, Any]]:
         """Check if a memory is already in an active job."""
         with sqlite3.connect(self.db_path) as conn:
